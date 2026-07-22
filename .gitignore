@@ -1,0 +1,14 @@
+.venv/
+.DS_Store
+
+# Local agent and research context
+AGENTS.md
+AGENT_CONTEXT.md
+*.ipynb
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vercel/
+frontend/*.local
+frontend/*-debug.log
