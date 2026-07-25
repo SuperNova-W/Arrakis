@@ -1,4 +1,7 @@
 #include "arrakis/market/finnhub_message.hpp"
+#include "arrakis/market/normalization.hpp"
+#include "arrakis/streaming/kafka.hpp"
+#include "arrakis/streaming/serialization.hpp"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -21,6 +24,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <exception>
+#include <thread>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -40,7 +44,7 @@ constexpr std::string_view kHost = "ws.finnhub.io";
 constexpr std::string_view kPort = "443";
 
 struct Options {
-    std::vector<std::string> symbols{"IWM"};
+    std::vector<std::string> symbols{"XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU", "SPY", "QQQ", "IWM", "TLT", "HYG", "GLD", "USO"};
     std::size_t max_events{};
 };
 
@@ -93,7 +97,7 @@ void print_usage(std::ostream& output) {
               "Environment:\n"
               "  FINNHUB_API_KEY      Finnhub API token\n"
               "\n"
-              "Defaults to IWM trades. A max-events value of 0 streams until interrupted.\n";
+              "Defaults to the configured ETF universe. A max-events value of 0 streams until interrupted.\n";
 }
 
 [[nodiscard]] Options parse_options(int argc, char* argv[]) {
@@ -158,6 +162,8 @@ void log_controls(const std::vector<arrakis::market::ControlMessage>& controls) 
 
 void run(const Options& options) {
     const auto api_key = required_environment_variable("FINNHUB_API_KEY");
+    const auto brokers = [] { const char* value = std::getenv("KAFKA_BOOTSTRAP_SERVERS"); return value == nullptr ? std::string("localhost:9092") : std::string(value); }();
+    arrakis::streaming::KafkaProducer producer(brokers, "finnhub-ingestion-v1");
     const auto host = kHost;
     const auto target = "/?token=" + api_key;
 
@@ -204,7 +210,16 @@ void run(const Options& options) {
         const auto frame = read_frame(stream);
         log_controls(frame.controls);
         for (const auto& trade : frame.trades) {
-            std::cout << arrakis::market::trade_event_to_json(trade) << '\n';
+            try {
+                auto normalized = arrakis::market::normalize_trade(trade, "finnhub");
+                normalized.received_timestamp_unix_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                const auto payload = arrakis::streaming::serialize_trade(normalized);
+                producer.publish("market.raw.trades", normalized.symbol, payload);
+                producer.poll_events(std::chrono::milliseconds(0));
+                std::cout << "{\"service\":\"market-ingestion\",\"symbol\":\"" << normalized.symbol << "\",\"event_id\":\"" << normalized.event_id << "\"}\n";
+            } catch (const std::exception& error) {
+                std::cerr << "{\"service\":\"market-ingestion\",\"error_code\":\"invalid_trade\",\"error\":\"" << error.what() << "\"}\n";
+            }
             ++event_count;
             if (options.max_events != 0 && event_count >= options.max_events) {
                 break;
@@ -212,6 +227,7 @@ void run(const Options& options) {
         }
     }
 
+    producer.flush(std::chrono::seconds(5));
     stream.close(websocket::close_code::normal);
 }
 
@@ -219,8 +235,18 @@ void run(const Options& options) {
 
 int main(int argc, char* argv[]) {
     try {
-        run(parse_options(argc, argv));
-        return EXIT_SUCCESS;
+        const auto options = parse_options(argc, argv);
+        std::chrono::seconds delay{1};
+        while (true) {
+            try {
+                run(options);
+                return EXIT_SUCCESS;
+            } catch (const std::exception& exception) {
+                std::cerr << "{\"service\":\"market-ingestion\",\"error\":\"" << exception.what() << "\",\"retry_seconds\":" << delay.count() << "}\n";
+                std::this_thread::sleep_for(delay);
+                delay = std::min(delay * 2, std::chrono::seconds{60});
+            }
+        }
     } catch (const std::exception& exception) {
         std::cerr << "arrakis-market-stream: " << exception.what() << '\n';
         return EXIT_FAILURE;

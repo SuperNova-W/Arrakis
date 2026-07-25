@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package market.events.v1;
+
+import "event_metadata.proto";
+
+message TradeEvent {
+  EventMetadata metadata = 1;
+  string symbol = 2;
+  double price = 3;
+  double volume = 4;
+  int64 source_timestamp_unix_ms = 5;
+  int64 received_timestamp_unix_ms = 6;
+  string source = 7;
+  repeated string trade_conditions = 8;
+}

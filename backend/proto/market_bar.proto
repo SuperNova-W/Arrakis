@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package market.events.v1;
+
+import "event_metadata.proto";
+
+message MarketBar {
+  EventMetadata metadata = 1;
+  string symbol = 2;
+  string interval = 3;
+  int64 bar_start_unix_ms = 4;
+  int64 bar_end_unix_ms = 5;
+  double open = 6;
+  double high = 7;
+  double low = 8;
+  double close = 9;
+  double volume = 10;
+  uint64 trade_count = 11;
+  int64 first_trade_timestamp_unix_ms = 12;
+  int64 last_trade_timestamp_unix_ms = 13;
+  bool finalized = 14;
+}

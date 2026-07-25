@@ -2,3 +2,5 @@
 /artifacts/
 *.dylib
 *.so
+
+.env

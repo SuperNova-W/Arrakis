@@ -1,0 +1,11 @@
+syntax = "proto3";
+package market.events.v1;
+import "event_metadata.proto";
+
+message LateTradeEvent {
+  EventMetadata metadata = 1;
+  string symbol = 2;
+  string trade_event_id = 3;
+  int64 source_timestamp_unix_ms = 4;
+  string reason = 5;
+}

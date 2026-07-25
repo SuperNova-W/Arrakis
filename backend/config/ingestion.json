@@ -1,0 +1,1 @@
+{"websocket_host":"ws.finnhub.io","websocket_port":"443","websocket_path":"/","raw_trade_topic":"market.raw.trades","dead_letter_topic":"dead-letter.events","producer_name":"finnhub-ingestion-v1","schema_version":"trade-event-v1"}

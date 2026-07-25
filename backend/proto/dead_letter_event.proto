@@ -1,0 +1,12 @@
+syntax = "proto3";
+package market.events.v1;
+import "event_metadata.proto";
+
+message DeadLetterEvent {
+  EventMetadata metadata = 1;
+  string source_service = 2;
+  string original_payload = 3;
+  string error_code = 4;
+  string error_description = 5;
+  int64 received_timestamp_unix_ms = 6;
+}

@@ -1,13 +1,16 @@
 # Arrakis C++ backend
 
-The backend currently contains two incremental C++20 slices:
+The backend contains a C++20 streaming vertical slice:
 
 - An XGBoost baseline trainer for time-ordered feature CSVs.
 - A TLS-secured Boost.Beast WebSocket client for Finnhub's real-time stock trade feed.
+- A protobuf/librdkafka path from `market.raw.trades` to `market.bars.1m`.
+- An event-time, per-symbol one-minute aggregator with bounded deduplication and watermarks.
 
 The stream client authenticates without logging credentials, subscribes to one or more symbols,
 parses batched Finnhub messages, and writes normalized trade events as newline-delimited JSON. That
-output boundary is designed to be replaced by a Kafka producer in a later milestone.
+The streaming services use at-least-once Kafka processing. Deterministic trade/bar IDs and duplicate
+suppression make replay safe within the in-memory process; this is not exactly-once.
 
 This is training infrastructure, not evidence of predictive market edge. The included CSV is
 synthetic smoke-test data and must never be presented as a research result.
@@ -101,7 +104,7 @@ Build and stream trades from Finnhub:
   --max-events 20
 ```
 
-`--symbols` defaults to `IWM`. `--max-events 0` (the default) keeps the stream open until the
+`--symbols` defaults to the configured ETF universe. `--max-events 0` (the default) keeps the stream open until the
 process is interrupted. Status messages are written to stderr; each market event is written to
 stdout as one normalized JSON object:
 
@@ -112,6 +115,20 @@ stdout as one normalized JSON object:
 Finnhub's WebSocket stock stream provides last-price trades and volume, not bid/ask quote updates.
 The stream can contain multiple trades in one frame. Finnhub documents a one-connection limit per
 API key, and activity may be sparse outside regular and extended market sessions.
+
+## Kafka slice
+
+Set `KAFKA_BOOTSTRAP_SERVERS` (defaults to `localhost:9092`) and start local infrastructure with:
+
+```bash
+docker compose up kafka kafka-init kafka-ui prometheus grafana
+./build/release/arrakis-market-stream
+./build/release/bar-aggregator
+```
+
+Trades and bars are protobuf messages keyed by symbol. Empty intervals emit no synthetic bar. The
+watermark is the maximum event time observed by the process minus five seconds. State is in memory
+and is rebuilt by Kafka replay after restart; a changelog or snapshot store is a future durability step.
 
 ## Run the sample
 

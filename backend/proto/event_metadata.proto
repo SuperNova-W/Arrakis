@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package market.events.v1;
+
+message EventMetadata {
+  string event_id = 1;
+  int64 event_time_unix_ms = 2;
+  int64 produced_time_unix_ms = 3;
+  string producer = 4;
+  string schema_version = 5;
+  string correlation_id = 6;
+}

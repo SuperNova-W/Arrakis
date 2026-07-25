@@ -1,0 +1,1 @@
+{"input_topic":"market.raw.trades","output_topic":"market.bars.1m","late_trade_topic":"market.late.trades","dead_letter_topic":"dead-letter.events","consumer_group":"bar-aggregation-v1","bar_interval_seconds":60,"allowed_lateness_seconds":5,"deduplication_window_minutes":10,"schema_version":"market-bar-v1"}
