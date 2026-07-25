@@ -12,3 +12,10 @@ frontend/dist/
 frontend/.vercel/
 frontend/*.local
 frontend/*-debug.log
+
+# C++ backend build and model artifacts
+backend/build/
+backend/artifacts/
+backend/.env
+backend/.env.*
+!backend/.env.example
