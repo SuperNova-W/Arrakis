@@ -9,6 +9,17 @@ services:
     command: ["/opt/arrakis/bar-aggregator"]
     environment: ["KAFKA_BOOTSTRAP_SERVERS=kafka:9092"]
     depends_on: [kafka-init]
+  feature-engine:
+    build: .
+    command: ["/opt/arrakis/feature-engine"]
+    environment: ["KAFKA_BOOTSTRAP_SERVERS=kafka:9092"]
+    depends_on: [kafka-init]
+  prediction-service:
+    build: .
+    command: ["/opt/arrakis/prediction-service"]
+    environment: ["KAFKA_BOOTSTRAP_SERVERS=kafka:9092", "ARRAKIS_PREDICTION_CONFIG=/opt/arrakis/config/prediction_service.json"]
+    volumes: ["./artifacts:/opt/arrakis/artifacts:ro"]
+    depends_on: [kafka-init]
   kafka:
     image: bitnami/kafka:3.8
     ports: ["9092:9092"]
@@ -35,11 +46,12 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: >-
       "until kafka-topics.sh --bootstrap-server kafka:9092 --list; do sleep 2; done;
-      for topic in market.raw.trades market.bars.1m market.late.trades dead-letter.events;
+      for topic in market.raw.trades market.bars.1m market.bars.5m market.late.trades market.features model.predictions market.feature.errors dead-letter.events;
       do kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic $$topic --partitions 3 --replication-factor 1; done"
   prometheus:
     image: prom/prometheus:latest
     ports: ["9090:9090"]
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
   grafana:
     image: grafana/grafana:latest
     ports: ["3000:3000"]

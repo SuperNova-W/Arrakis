@@ -31,6 +31,7 @@ public:
     void poll_events(std::chrono::milliseconds timeout);
     void flush(std::chrono::milliseconds timeout);
     [[nodiscard]] bool usable() const noexcept;
+    [[nodiscard]] std::uint64_t delivery_failures() const noexcept;
 
 private:
     struct Impl;

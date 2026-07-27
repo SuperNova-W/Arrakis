@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package model.predictions.v1;
+
+message PredictionEvent {
+  string event_id = 1;
+  string feature_event_id = 2;
+  string target_symbol = 3;
+  int64 event_time_unix_ms = 4;
+  int64 produced_time_unix_ms = 5;
+  string model_id = 6;
+  string model_version = 7;
+  string feature_version = 8;
+  string feature_schema_hash = 9;
+  double predicted_return = 10;
+  int32 prediction_horizon_bars = 11;
+}

@@ -7,8 +7,39 @@ The backend contains a C++20 streaming vertical slice:
 - A protobuf/librdkafka path from `market.raw.trades` to `market.bars.1m`.
 - An event-time, per-symbol one-minute aggregator with bounded deduplication and watermarks.
 
+The deployable services are isolated under `services/`: `services/bar_aggregator` owns the bar
+aggregator executable and its service-level CMake target. Kafka, protobuf, configuration, metrics,
+and serialization remain shared libraries so other consumers can be added without coupling service
+entry points together.
+
+The ML implementation is isolated under `services/ml_model/`. It owns the dataset, metrics, sector
+feature/XGBoost code, trainer executable, and sample training data. Its reusable library remains
+named `arrakis_model_core`, and the trainer remains `arrakis-train-xgboost` for command-line
+compatibility.
+
+Shared market code is isolated under `libs/market/`, shared protobuf conversion under
+`libs/serialization/`, and bar state/aggregation under
+`services/bar_aggregator/`. The bar service depends on the shared libraries through explicit CMake
+targets; it no longer owns or compiles market normalization or serialization implementation files.
+
+The feature-engineering service is isolated under `services/feature_engine/`. It consumes completed
+`market.bars.5m` protobuf bars, aligns all configured sector/context ETFs by `bar_end`, maintains a
+bounded history, and publishes deterministic `sector-features-v1` events to `market.features`.
+It requires a complete 18-symbol timestamp bucket; expired buckets are reported to
+`market.feature.errors` without forward-filling. Feature calculations use log returns, sample
+standard deviation, current-bar-inclusive SMAs, and current-bar-excluded relative-volume averages.
+The initial service uses in-memory state plus deterministic Kafka replay after restart and does not
+claim exactly-once processing.
+
+The XLK prediction service is isolated under `services/prediction_service/`. It consumes named,
+versioned `FeatureEvent` protobufs from `market.features`, validates them against the loaded
+artifact metadata/schema, runs the existing XGBoost C API model, and publishes `PredictionEvent`
+protobufs to `model.predictions`. It commits only after output is enqueued; malformed or incompatible
+events go to `dead-letter.events`. The configured artifact directory must contain an XLK model,
+metadata, and feature schema. Legacy artifacts with incompatible feature ordering are rejected.
+
 The stream client authenticates without logging credentials, subscribes to one or more symbols,
-parses batched Finnhub messages, and writes normalized trade events as newline-delimited JSON. That
+parses batched Finnhub messages, and publishes normalized protobuf trade events to Kafka. The
 The streaming services use at-least-once Kafka processing. Deterministic trade/bar IDs and duplicate
 suppression make replay safe within the in-memory process; this is not exactly-once.
 
@@ -127,14 +158,21 @@ docker compose up kafka kafka-init kafka-ui prometheus grafana
 ```
 
 Trades and bars are protobuf messages keyed by symbol. Empty intervals emit no synthetic bar. The
-watermark is the maximum event time observed by the process minus five seconds. State is in memory
-and is rebuilt by Kafka replay after restart; a changelog or snapshot store is a future durability step.
+watermark is maintained independently per symbol and is that symbol's maximum event time minus the
+configured allowed lateness. Malformed input is published as `dead-letter.events`; trades arriving
+after finalization are published as `market.late.trades`. State is in memory and is rebuilt by Kafka
+replay after restart; a changelog or snapshot store is a future durability step.
+
+Both services expose Prometheus text metrics on the configured `metrics_port` (9101 for ingestion,
+9102 for aggregation). Kafka delivery callbacks log asynchronous delivery failures. The consumer
+commits only after deserialization, state update, output enqueue, and late/dead-letter routing. This
+is at-least-once processing, not end-to-end exactly-once processing.
 
 ## Run the sample
 
 ```bash
 ./build/release/arrakis-train-xgboost \
-  --input data/sample_features.csv \
+  --input services/ml_model/data/sample_features.csv \
   --target target_up_5d \
   --model-output artifacts/xgboost_baseline.json \
   --rounds 75

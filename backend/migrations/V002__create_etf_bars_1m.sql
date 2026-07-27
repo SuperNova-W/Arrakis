@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS etf_bars_1m (
+    bar_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL REFERENCES etf_metadata(symbol),
+    bar_start TIMESTAMPTZ NOT NULL,
+    bar_end TIMESTAMPTZ NOT NULL,
+    open DOUBLE PRECISION NOT NULL CHECK (open > 0),
+    high DOUBLE PRECISION NOT NULL CHECK (high > 0),
+    low DOUBLE PRECISION NOT NULL CHECK (low > 0),
+    close DOUBLE PRECISION NOT NULL CHECK (close > 0),
+    volume DOUBLE PRECISION NOT NULL CHECK (volume >= 0),
+    trade_count BIGINT NOT NULL CHECK (trade_count >= 0),
+    first_trade_timestamp TIMESTAMPTZ NOT NULL,
+    last_trade_timestamp TIMESTAMPTZ NOT NULL,
+    source TEXT NOT NULL,
+    inserted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (symbol, bar_start),
+    CHECK (bar_end > bar_start),
+    CHECK (low <= open AND open <= high),
+    CHECK (low <= close AND close <= high)
+);

@@ -5,9 +5,17 @@
 #include <stdexcept>
 #include <string>
 #include <cstring>
+#include <cstdio>
+#include <atomic>
 
 namespace arrakis::streaming {
 namespace {
+void delivery_report(rd_kafka_t*, const rd_kafka_message_t* message, void* opaque) {
+    if (message->err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        if (opaque != nullptr) ++*static_cast<std::atomic<std::uint64_t>*>(opaque);
+        std::fprintf(stderr, "{\"service\":\"kafka-producer\",\"event\":\"delivery_failure\",\"error\":\"%s\"}\n", rd_kafka_err2str(message->err));
+    }
+}
 void check(rd_kafka_resp_err_t error, const char* action) {
     if (error != RD_KAFKA_RESP_ERR_NO_ERROR) throw std::runtime_error(std::string(action) + ": " + rd_kafka_err2str(error));
 }
@@ -16,15 +24,15 @@ rd_kafka_conf_t* config(std::string_view brokers, std::string_view client, bool 
     char error[512]{};
     auto set = [&](const char* key, const char* value) { if (rd_kafka_conf_set(conf, key, value, error, sizeof(error)) != RD_KAFKA_CONF_OK) throw std::runtime_error(std::string("Kafka config ") + key + ": " + error); };
     set("bootstrap.servers", std::string(brokers).c_str()); set("client.id", std::string(client).c_str());
-    if (producer) { set("acks", "all"); set("enable.idempotence", "true"); set("compression.type", "zstd"); set("delivery.timeout.ms", "30000"); }
+    if (producer) { set("acks", "all"); set("enable.idempotence", "true"); set("compression.type", "zstd"); set("delivery.timeout.ms", "30000"); set("retries", "10"); rd_kafka_conf_set_dr_msg_cb(conf, delivery_report); }
     else { set("enable.auto.commit", "false"); set("auto.offset.reset", "earliest"); }
     return conf;
 }
 }
 
-struct KafkaProducer::Impl { rd_kafka_t* handle{}; };
+struct KafkaProducer::Impl { rd_kafka_t* handle{}; std::atomic<std::uint64_t> delivery_failures{}; };
 KafkaProducer::KafkaProducer(std::string_view brokers, std::string_view client_id) : impl_(std::make_unique<Impl>()) {
-    char error[512]{}; auto* conf = config(brokers, client_id, true); impl_->handle = rd_kafka_new(RD_KAFKA_PRODUCER, conf, error, sizeof(error));
+    char error[512]{}; auto* conf = config(brokers, client_id, true); rd_kafka_conf_set_opaque(conf, &impl_->delivery_failures); impl_->handle = rd_kafka_new(RD_KAFKA_PRODUCER, conf, error, sizeof(error));
     if (impl_->handle == nullptr) throw std::runtime_error(std::string("Kafka producer: ") + error);
 }
 KafkaProducer::~KafkaProducer() { if (impl_ && impl_->handle) { rd_kafka_flush(impl_->handle, 5000); rd_kafka_destroy(impl_->handle); } }
@@ -41,6 +49,7 @@ void KafkaProducer::publish(std::string_view topic, std::string_view key, std::s
 void KafkaProducer::poll_events(std::chrono::milliseconds timeout) { rd_kafka_poll(impl_->handle, static_cast<int>(timeout.count())); }
 void KafkaProducer::flush(std::chrono::milliseconds timeout) { check(rd_kafka_flush(impl_->handle, static_cast<int>(timeout.count())), "Kafka flush"); }
 bool KafkaProducer::usable() const noexcept { return impl_ && impl_->handle; }
+std::uint64_t KafkaProducer::delivery_failures() const noexcept { return impl_ == nullptr ? 0U : impl_->delivery_failures.load(); }
 
 struct KafkaConsumer::Impl { rd_kafka_t* handle{}; std::string topic; };
 KafkaConsumer::KafkaConsumer(std::string_view brokers, std::string_view group, std::string_view topic) : impl_(std::make_unique<Impl>()) {

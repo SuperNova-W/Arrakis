@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: market-ingestion
+    static_configs:
+      - targets: ["market-ingestion:9101"]
+  - job_name: bar-aggregator
+    static_configs:
+      - targets: ["bar-aggregator:9102"]
+  - job_name: feature-engine
+    static_configs:
+      - targets: ["feature-engine:9103"]

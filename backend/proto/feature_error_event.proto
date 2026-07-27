@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package market.features.v1;
+
+message FeatureErrorEvent {
+  string event_id = 1;
+  string source_topic = 2;
+  int32 partition = 3;
+  int64 offset = 4;
+  string source_bar_event_id = 5;
+  string symbol = 6;
+  int64 event_time_unix_ms = 7;
+  string error_code = 8;
+  string error_description = 9;
+  string service = 10;
+  bytes original_payload = 11;
+  repeated string missing_symbols = 12;
+}

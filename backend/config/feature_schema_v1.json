@@ -1,0 +1,1 @@
+{"feature_version":"sector-features-v1","description":"Deterministic ordered sector and market-context features","missing_data_policy":"skip_until_warm","volatility_definition":"sample_standard_deviation_of_one_bar_log_returns","relative_volume_excludes_current_bar":true,"moving_average_includes_current_bar":true}

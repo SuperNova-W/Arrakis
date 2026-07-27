@@ -1,0 +1,20 @@
+INSERT INTO etf_metadata (symbol, name, category) VALUES
+    ('XLC', 'Communication Services', 'sector'),
+    ('XLY', 'Consumer Discretionary', 'sector'),
+    ('XLP', 'Consumer Staples', 'sector'),
+    ('XLE', 'Energy', 'sector'),
+    ('XLF', 'Financials', 'sector'),
+    ('XLV', 'Health Care', 'sector'),
+    ('XLI', 'Industrials', 'sector'),
+    ('XLB', 'Materials', 'sector'),
+    ('XLRE', 'Real Estate', 'sector'),
+    ('XLK', 'Technology', 'sector'),
+    ('XLU', 'Utilities', 'sector'),
+    ('SPY', 'S&P 500', 'context'),
+    ('QQQ', 'Nasdaq-100', 'context'),
+    ('IWM', 'Russell 2000', 'context'),
+    ('TLT', 'Long-Term Treasuries', 'context'),
+    ('HYG', 'High-Yield Corporate Bonds', 'context'),
+    ('GLD', 'Gold', 'context'),
+    ('USO', 'Crude Oil', 'context')
+ON CONFLICT (symbol) DO UPDATE SET name = EXCLUDED.name, category = EXCLUDED.category, updated_at = NOW();

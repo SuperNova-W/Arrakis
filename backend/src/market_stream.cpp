@@ -1,7 +1,9 @@
 #include "arrakis/market/finnhub_message.hpp"
 #include "arrakis/market/normalization.hpp"
 #include "arrakis/streaming/kafka.hpp"
-#include "arrakis/streaming/serialization.hpp"
+#include "arrakis/serialization/serialization.hpp"
+#include "arrakis/runtime/config.hpp"
+#include "arrakis/runtime/metrics.hpp"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -30,6 +32,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <random>
+#include <atomic>
+
+namespace { volatile std::sig_atomic_t g_running = 1; void stop_signal(int) { g_running = 0; } }
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -40,11 +46,8 @@ using tcp = asio::ip::tcp;
 
 namespace {
 
-constexpr std::string_view kHost = "ws.finnhub.io";
-constexpr std::string_view kPort = "443";
-
 struct Options {
-    std::vector<std::string> symbols{"XLC", "XLY", "XLP", "XLE", "XLF", "XLV", "XLI", "XLB", "XLRE", "XLK", "XLU", "SPY", "QQQ", "IWM", "TLT", "HYG", "GLD", "USO"};
+    std::vector<std::string> symbols;
     std::size_t max_events{};
 };
 
@@ -162,10 +165,14 @@ void log_controls(const std::vector<arrakis::market::ControlMessage>& controls) 
 
 void run(const Options& options) {
     const auto api_key = required_environment_variable("FINNHUB_API_KEY");
+    const auto config_path = [] { const char* value = std::getenv("ARRAKIS_INGESTION_CONFIG"); return value == nullptr ? std::string("config/ingestion.json") : std::string(value); }();
+    const auto config = arrakis::runtime::load_ingestion_config(config_path);
+    arrakis::runtime::Metrics metrics;
+    arrakis::runtime::MetricsServer metrics_server(metrics, config.metrics_port);
     const auto brokers = [] { const char* value = std::getenv("KAFKA_BOOTSTRAP_SERVERS"); return value == nullptr ? std::string("localhost:9092") : std::string(value); }();
     arrakis::streaming::KafkaProducer producer(brokers, "finnhub-ingestion-v1");
-    const auto host = kHost;
-    const auto target = "/?token=" + api_key;
+    const auto host = config.websocket_host;
+    const auto target = config.websocket_path + "?token=" + api_key;
 
     asio::io_context io_context;
     ssl::context tls_context(ssl::context::tls_client);
@@ -184,7 +191,7 @@ void run(const Options& options) {
     }
     stream.next_layer().set_verify_callback(ssl::host_name_verification(std::string(host)));
 
-    const auto endpoints = resolver.resolve(host, kPort);
+    const auto endpoints = resolver.resolve(host, config.websocket_port);
     beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(30));
     beast::get_lowest_layer(stream).connect(endpoints);
     stream.next_layer().handshake(ssl::stream_base::client);
@@ -198,7 +205,8 @@ void run(const Options& options) {
     stream.handshake(std::string(host), target);
     stream.text(true);
 
-    for (const auto& symbol : options.symbols) {
+    const auto& symbols = options.symbols.empty() ? config.symbols : options.symbols;
+    for (const auto& symbol : symbols) {
         write_json(stream, boost::json::object{
             {"type", "subscribe"},
             {"symbol", symbol},
@@ -206,18 +214,35 @@ void run(const Options& options) {
     }
 
     std::size_t event_count = 0;
-    while (options.max_events == 0 || event_count < options.max_events) {
-        const auto frame = read_frame(stream);
+    while (g_running != 0 && (options.max_events == 0 || event_count < options.max_events)) {
+        beast::flat_buffer input_buffer;
+        stream.read(input_buffer);
+        const auto raw_payload = beast::buffers_to_string(input_buffer.data());
+        arrakis::market::FinnhubFrame frame;
+        try { frame = arrakis::market::parse_finnhub_frame(raw_payload); metrics.increment("finnhub_messages_received_total"); }
+        catch (const std::exception& error) {
+            const std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(raw_payload.data()), reinterpret_cast<const std::byte*>(raw_payload.data() + raw_payload.size()));
+            const auto received = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            producer.publish(config.dead_letter_topic, "", arrakis::streaming::serialize_dead_letter("market-ingestion", bytes, "malformed_finnhub_message", error.what(), received));
+            producer.flush(std::chrono::seconds(5)); producer.poll_events(std::chrono::milliseconds(0)); metrics.increment("finnhub_malformed_messages_total"); metrics.set("kafka_delivery_failures_total", static_cast<std::int64_t>(producer.delivery_failures())); continue;
+        }
         log_controls(frame.controls);
         for (const auto& trade : frame.trades) {
             try {
                 auto normalized = arrakis::market::normalize_trade(trade, "finnhub");
                 normalized.received_timestamp_unix_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                 const auto payload = arrakis::streaming::serialize_trade(normalized);
-                producer.publish("market.raw.trades", normalized.symbol, payload);
-                producer.poll_events(std::chrono::milliseconds(0));
+                producer.publish(config.raw_trade_topic, normalized.symbol, payload);
+                producer.poll_events(std::chrono::milliseconds(0)); metrics.set("kafka_delivery_failures_total", static_cast<std::int64_t>(producer.delivery_failures()));
+                metrics.increment("finnhub_trade_events_total"); metrics.increment("kafka_trade_publish_success_total");
                 std::cout << "{\"service\":\"market-ingestion\",\"symbol\":\"" << normalized.symbol << "\",\"event_id\":\"" << normalized.event_id << "\"}\n";
             } catch (const std::exception& error) {
+                const auto received = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+                const auto original = arrakis::market::trade_event_to_json(trade);
+                const std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(original.data()), reinterpret_cast<const std::byte*>(original.data() + original.size()));
+                producer.publish(config.dead_letter_topic, trade.symbol, arrakis::streaming::serialize_dead_letter("market-ingestion", bytes, "invalid_trade", error.what(), received));
+                producer.flush(std::chrono::seconds(5));
+                metrics.increment("kafka_trade_publish_failure_total");
                 std::cerr << "{\"service\":\"market-ingestion\",\"error_code\":\"invalid_trade\",\"error\":\"" << error.what() << "\"}\n";
             }
             ++event_count;
@@ -235,16 +260,23 @@ void run(const Options& options) {
 
 int main(int argc, char* argv[]) {
     try {
+        std::signal(SIGINT, stop_signal); std::signal(SIGTERM, stop_signal);
         const auto options = parse_options(argc, argv);
-        std::chrono::seconds delay{1};
-        while (true) {
+        const auto config_path = [] { const char* value = std::getenv("ARRAKIS_INGESTION_CONFIG"); return value == nullptr ? std::string("config/ingestion.json") : std::string(value); }();
+        const auto reconnect_config = arrakis::runtime::load_ingestion_config(config_path);
+        std::uint32_t delay_ms = reconnect_config.initial_reconnect_delay_ms;
+        std::mt19937 generator(std::random_device{}());
+        while (g_running != 0) {
             try {
                 run(options);
                 return EXIT_SUCCESS;
             } catch (const std::exception& exception) {
-                std::cerr << "{\"service\":\"market-ingestion\",\"error\":\"" << exception.what() << "\",\"retry_seconds\":" << delay.count() << "}\n";
-                std::this_thread::sleep_for(delay);
-                delay = std::min(delay * 2, std::chrono::seconds{60});
+                std::cerr << "{\"service\":\"market-ingestion\",\"error\":\"" << exception.what() << "\",\"retry_ms\":" << delay_ms << "}\n";
+                const auto jitter_percent = static_cast<int>(reconnect_config.reconnect_jitter_percent);
+                std::uniform_int_distribution<int> jitter(-jitter_percent, jitter_percent);
+                const auto jittered = std::max<std::uint32_t>(100U, delay_ms * static_cast<std::uint32_t>(100 + jitter(generator)) / 100U);
+                std::this_thread::sleep_for(std::chrono::milliseconds(jittered));
+                delay_ms = std::min(delay_ms * 2U, reconnect_config.maximum_reconnect_delay_ms);
             }
         }
     } catch (const std::exception& exception) {

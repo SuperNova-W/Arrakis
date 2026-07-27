@@ -1,0 +1,1 @@
+{"input_topic":"market.features","output_topic":"model.predictions","dead_letter_topic":"dead-letter.events","consumer_group":"xgb-prediction-v1","target_symbol":"XLK","feature_version":"sector-features-v1","model_path":"artifacts/xgb_xlk/model.ubj","metadata_path":"artifacts/xgb_xlk/metadata.json","schema_path":"artifacts/xgb_xlk/feature_schema.json","metrics_port":9104}

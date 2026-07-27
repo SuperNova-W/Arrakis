@@ -10,7 +10,7 @@
 #include <string>
 
 #ifndef ARRAKIS_SAMPLE_DATASET_PATH
-#define ARRAKIS_SAMPLE_DATASET_PATH "data/sample_features.csv"
+#define ARRAKIS_SAMPLE_DATASET_PATH "services/ml_model/data/sample_features.csv"
 #endif
 
 namespace {
