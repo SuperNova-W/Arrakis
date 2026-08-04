@@ -31,5 +31,6 @@ See [`frontend/README.md`](frontend/README.md) for frontend details and Vercel d
 See [`backend/README.md`](backend/README.md) for the C++ model trainer, live market stream, data
 contracts, and build instructions.
 
-> All market, strategy, model, and infrastructure values currently shown in the application are
-> simulated mock data. They are not evidence of live services or validated trading performance.
+> Dashboard market prices come from the Finnhub WebSocket → Kafka → C++ gateway path when those
+> services are running. Model recommendations remain research-only and are shown only when backed
+> by the configured inference artifacts and stored point-in-time features.

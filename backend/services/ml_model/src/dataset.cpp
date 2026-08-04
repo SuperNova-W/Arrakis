@@ -13,18 +13,28 @@ namespace {
 
 [[nodiscard]] std::vector<std::string> split_csv_line(const std::string& line) {
     std::vector<std::string> fields;
-    std::stringstream stream{line};
     std::string field;
-
-    while (std::getline(stream, field, ',')) {
-        fields.push_back(field);
+    bool quoted = false;
+    for (std::size_t index = 0; index < line.size(); ++index) {
+        const char character = line[index];
+        if (character == '"') {
+            if (quoted && index + 1 < line.size() && line[index + 1] == '"') {
+                field.push_back('"');
+                ++index;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (character == ',' && !quoted) {
+            fields.push_back(field);
+            field.clear();
+        } else {
+            field.push_back(character);
+        }
     }
-
-    // std::getline omits a final empty field after a trailing comma.
-    if (!line.empty() && line.back() == ',') {
-        fields.emplace_back();
+    if (quoted) {
+        throw std::runtime_error{"Unterminated quoted CSV field"};
     }
-
+    fields.push_back(field);
     return fields;
 }
 
@@ -191,6 +201,51 @@ DatasetSplit chronological_split(const Dataset& dataset, const double validation
     return DatasetSplit{
         .train = slice_rows(dataset, 0, split_index),
         .validation = slice_rows(dataset, split_index, dataset.row_count()),
+    };
+}
+
+DatasetThreeWaySplit chronological_split_by_dates(
+    const Dataset& dataset,
+    const std::string& train_end,
+    const std::string& validation_end,
+    const std::string& test_end
+) {
+    if (train_end.empty() || validation_end.empty() || test_end.empty() ||
+        train_end >= validation_end || validation_end >= test_end) {
+        throw std::invalid_argument{"Split boundaries must be non-empty and strictly increasing"};
+    }
+    if (dataset.row_count() < 10 || dataset.feature_count() == 0) {
+        throw std::invalid_argument{"Dataset is too small or has no features"};
+    }
+
+    std::size_t train_end_index = 0;
+    while (train_end_index < dataset.row_count() &&
+           dataset.dates[train_end_index] <= train_end) {
+        ++train_end_index;
+    }
+    const auto validation_begin = train_end_index;
+    std::size_t validation_end_index = validation_begin;
+    while (validation_end_index < dataset.row_count() &&
+           dataset.dates[validation_end_index] <= validation_end) {
+        ++validation_end_index;
+    }
+    const auto test_begin = validation_end_index;
+    std::size_t test_end_index = test_begin;
+    while (test_end_index < dataset.row_count() && dataset.dates[test_end_index] <= test_end) {
+        ++test_end_index;
+    }
+    if (train_end_index == 0 || validation_end_index == validation_begin ||
+        test_end_index == test_begin) {
+        throw std::invalid_argument{"Requested chronological split contains an empty partition"};
+    }
+    if (test_end_index != dataset.row_count()) {
+        throw std::invalid_argument{"Dataset contains rows after --test-end"};
+    }
+
+    return DatasetThreeWaySplit{
+        .train = slice_rows(dataset, 0, train_end_index),
+        .validation = slice_rows(dataset, validation_begin, validation_end_index),
+        .test = slice_rows(dataset, test_begin, test_end_index),
     };
 }
 

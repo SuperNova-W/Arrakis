@@ -1,5 +1,12 @@
 /build/
 /artifacts/
+/data/metadata/sec_nport/*.zip
+/data/fnspid/raw/
+/data/fnspid/normalized/
+/data/fnspid/manifests/
+/models/*
+!/models/finbert/
+!/models/finbert/README.md
 *.dylib
 *.so
 

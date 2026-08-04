@@ -1,0 +1,11 @@
+data/fnspid/raw/
+data/fnspid/normalized/
+data/fnspid/manifests/
+data/metadata/sec_nport/*.zip
+build/
+.git/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+*.csv
+*.parquet

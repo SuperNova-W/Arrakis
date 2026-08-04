@@ -153,3 +153,87 @@ message size, partition count, concurrency, duration, and percentile methodology
 At the time this goal was adopted, the repository contained a Python notebook with an initial IWM
 research baseline and `AGENT_CONTEXT.md`. The C++ platform has not yet been implemented. Treat the
 notebook as background evidence and begin the new system from the C++ foundation described above.
+
+## Final Project Goal
+
+The final goal is to build and verify a production-oriented, research-only platform that produces
+sector-specific ETF recommendations such as Bullish, Neutral, or Bearish, together with a calibrated
+confidence level and an explicit research disclaimer. The platform must never execute trades.
+
+The intended end-to-end system is:
+
+```text
+Finnhub WebSocket
+  → C++ market ingestion
+  → Kafka raw market events
+  → C++ validation and bar aggregation
+  → PostgreSQL/Supabase
+  → leakage-safe market and news features
+  → FinBERT ONNX sentiment and embeddings
+  → one XGBoost classifier per supported sector ETF
+  → C++ inference/API service
+  → frontend insights and research recommendations
+```
+
+### Final deliverables
+
+- Support the sector ETF universe defined in `config/etf_universe.json`, beginning with XLK and
+  generalizing only after the XLK path is reproducible.
+- Produce recommendation direction, probability/confidence, predicted next-close direction, signal
+  strength, supporting news themes, affected holdings, and article citations.
+- Combine price, volume, volatility, momentum, relative-strength, context-ETF, macro, FinBERT
+  sentiment, FinBERT embedding, news coverage, novelty, and freshness features.
+- Use point-in-time publication cutoffs, historical ETF constituent membership, chronological
+  validation, expanding or rolling walk-forward evaluation, and transaction-cost-aware backtesting.
+- Evaluate across 28 or more documented out-of-sample periods spanning multiple market regimes.
+- Measure classification and financial performance, including accuracy, balanced accuracy, ROC AUC,
+  log loss, calibration, Sharpe, Sortino, CAGR, maximum drawdown, turnover, hit rate, and profit factor.
+- Benchmark the complete streaming path and report measured throughput and p50/p95/p99 latency. The
+  target resume evidence is 340K+ market updates/sec and 42 ms end-to-end latency, but those numbers
+  must not be claimed until reproduced with a recorded benchmark artifact.
+- Containerize and verify the complete local system with Docker, Kafka, PostgreSQL, Prometheus,
+  Grafana, market ingestion, aggregation, API, and frontend services.
+- Add restart recovery, Kafka replay, idempotent persistence, bounded queues, structured logs,
+  metrics, health checks, integration tests, and an operational runbook.
+
+### Final model direction
+
+The approved news-prediction architecture is:
+
+```text
+historical/news articles
+  → point-in-time filtering and deduplication
+  → FinBERT ONNX article probabilities and embeddings
+  → daily ETF news aggregation
+  → market/context feature join
+  → XGBoost next-close classifier
+```
+
+FinBERT remains frozen and versioned. XGBoost must consume a fixed, named, hashed numeric feature
+schema. Model artifacts must include the dataset checksum, training/validation/test windows, target
+definition, threshold, feature order, FinBERT version, tokenizer version, aggregation version, and
+held-out predictions.
+
+For the XLK experiment, use FNSPID where licensed and appropriate, SEC-derived historical XLK
+holdings, and the existing historical market data. The initial verified coverage begins in 2019 due
+to the available SEC N-PORT holdings history; this limitation must be reported until earlier holdings
+history is independently sourced and validated.
+
+The final target resume statement is:
+
+> Built a platform that produces sector-specific ETF research recommendations with confidence levels;
+> achieved a 1.30 net Sharpe ratio across 28 out-of-sample periods after transaction costs; built a
+> C++/Apache Kafka real-time streaming system; measured 340K+ market updates/sec with 42 ms
+> end-to-end latency; containerized WebSocket ingestion using Boost.Beast; and built an XGBoost
+> pipeline combining FinBERT news features with price and volume data to predict next-day direction.
+
+This statement is aspirational acceptance criteria, not a current-status claim. Each metric must be
+backed by reproducible code, configuration, raw-data manifests, benchmark methodology, held-out
+predictions, and stored evaluation artifacts before it is described as completed.
+
+### Explicit model constraint
+
+For the final FinBERT news system, do not design, train, evaluate, compare, deploy, or retain
+Logistic Regression artifacts. The production research path is FinBERT plus XGBoost only. Any older
+Logistic Regression references in historical repository guidance are legacy context and do not apply
+to the final news-enhanced model direction.

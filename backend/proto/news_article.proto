@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package market.events.v1;
+
+import "event_metadata.proto";
+
+message NewsArticle {
+  EventMetadata metadata = 1;
+  string article_id = 2;
+  string canonical_url = 3;
+  string normalized_content_hash = 4;
+  string source_id = 5;
+  string headline = 6;
+  string body = 7;
+  int64 published_at_unix_ms = 8;
+  int64 retrieved_at_unix_ms = 9;
+  string language = 10;
+  repeated string entity_ids = 11;
+}
+
+message NewsEnrichedFeature {
+  EventMetadata metadata = 1;
+  string article_id = 2;
+  string model_version = 3;
+  string tokenizer_version = 4;
+  double positive_probability = 5;
+  double neutral_probability = 6;
+  double negative_probability = 7;
+  double sentiment_score = 8;
+  repeated double pooled_embedding = 9;
+  double relevance_score = 10;
+  int64 prediction_cutoff_unix_ms = 11;
+}

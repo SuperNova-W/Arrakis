@@ -80,14 +80,14 @@ bar_aggregator::MarketBar deserialize_bar(std::span<const std::byte> bytes) {
 std::vector<std::byte> serialize_late_trade(const market::NormalizedTrade& trade, std::string_view reason) {
     ::market::events::v1::LateTradeEvent message;
     auto* metadata = message.mutable_metadata(); metadata->set_event_id(trade.event_id); metadata->set_event_time_unix_ms(static_cast<std::int64_t>(trade.source_timestamp_unix_ms)); metadata->set_producer("bar-aggregator-v1"); metadata->set_schema_version("late-trade-v1");
-    message.set_symbol(trade.symbol); message.set_trade_event_id(trade.event_id); message.set_source_timestamp_unix_ms(static_cast<std::int64_t>(trade.source_timestamp_unix_ms)); message.set_reason(reason);
+    message.set_symbol(trade.symbol); message.set_trade_event_id(trade.event_id); message.set_source_timestamp_unix_ms(static_cast<std::int64_t>(trade.source_timestamp_unix_ms)); message.set_reason(std::string(reason));
     return encode(message);
 }
 
 std::vector<std::byte> serialize_dead_letter(std::string_view service, std::span<const std::byte> original, std::string_view code, std::string_view description, std::int64_t received_time_ms) {
     ::market::events::v1::DeadLetterEvent message;
-    auto* metadata = message.mutable_metadata(); metadata->set_event_id(std::string(service) + ":dead-letter:" + std::to_string(received_time_ms)); metadata->set_event_time_unix_ms(received_time_ms); metadata->set_producer(service); metadata->set_schema_version("dead-letter-v1");
-    message.set_source_service(service); message.set_original_payload(std::string(reinterpret_cast<const char*>(original.data()), original.size())); message.set_error_code(code); message.set_error_description(description); message.set_received_timestamp_unix_ms(received_time_ms);
+    auto* metadata = message.mutable_metadata(); metadata->set_event_id(std::string(service) + ":dead-letter:" + std::to_string(received_time_ms)); metadata->set_event_time_unix_ms(received_time_ms); metadata->set_producer(std::string(service)); metadata->set_schema_version("dead-letter-v1");
+    message.set_source_service(std::string(service)); message.set_original_payload(std::string(reinterpret_cast<const char*>(original.data()), original.size())); message.set_error_code(std::string(code)); message.set_error_description(std::string(description)); message.set_received_timestamp_unix_ms(received_time_ms);
     return encode(message);
 }
 }

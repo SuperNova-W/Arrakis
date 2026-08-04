@@ -1,57 +1,216 @@
 services:
-  market-ingestion:
-    build: .
-    command: ["/opt/arrakis/arrakis-market-stream"]
-    environment: ["FINNHUB_API_KEY", "KAFKA_BOOTSTRAP_SERVERS=kafka:9092"]
-    depends_on: [kafka-init]
-  bar-aggregator:
-    build: .
-    command: ["/opt/arrakis/bar-aggregator"]
-    environment: ["KAFKA_BOOTSTRAP_SERVERS=kafka:9092"]
-    depends_on: [kafka-init]
-  feature-engine:
-    build: .
-    command: ["/opt/arrakis/feature-engine"]
-    environment: ["KAFKA_BOOTSTRAP_SERVERS=kafka:9092"]
-    depends_on: [kafka-init]
-  prediction-service:
-    build: .
-    command: ["/opt/arrakis/prediction-service"]
-    environment: ["KAFKA_BOOTSTRAP_SERVERS=kafka:9092", "ARRAKIS_PREDICTION_CONFIG=/opt/arrakis/config/prediction_service.json"]
-    volumes: ["./artifacts:/opt/arrakis/artifacts:ro"]
-    depends_on: [kafka-init]
   kafka:
-    image: bitnami/kafka:3.8
-    ports: ["9092:9092"]
+    image: bitnamilegacy/kafka:3.8
+    ports:
+      - "9092:9092"
+      - "9094:9094"
     environment:
       KAFKA_CFG_NODE_ID: 1
       KAFKA_CFG_PROCESS_ROLES: controller,broker
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_CFG_LOG_RETENTION_HOURS: 72
       ALLOW_PLAINTEXT_LISTENER: "yes"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka-init:
+    image: bitnamilegacy/kafka:3.8
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      "kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+      --topic market.raw.trades --partitions 6 --replication-factor 1;
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+      --topic news.raw.articles --partitions 6 --replication-factor 1;
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+      --topic news.enriched.features --partitions 6 --replication-factor 1"
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-market_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arrakis-local-dev-only}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres-migrations:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-market_data}
+      PGUSER: ${POSTGRES_USER:-market_app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-arrakis-local-dev-only}
+    volumes:
+      - ./migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      "set -eu; psql -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())';
+      for file in /migrations/V*.sql; do version=$$(basename $$file | cut -d_ -f1); if ! psql -tAc \"SELECT 1 FROM schema_migrations WHERE version='$$version'\" | grep -q 1; then psql -v ON_ERROR_STOP=1 -f $$file; psql -v ON_ERROR_STOP=1 -c \"INSERT INTO schema_migrations(version) VALUES ('$$version')\"; fi; done"
+
+  market-ingestion:
+    build:
+      context: .
+    command: ["/opt/arrakis/market-ingestion"]
+    environment:
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ARRAKIS_INGESTION_CONFIG: /opt/arrakis/config/ingestion.json
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  news-ingestion:
+    build:
+      context: .
+    command: ["/opt/arrakis/news-ingestion", "--fixture", "/opt/arrakis/fixtures/xlk_news.jsonl"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      NEWS_RAW_TOPIC: news.raw.articles
+    volumes:
+      - ./tests/fixtures/xlk_news.jsonl:/opt/arrakis/fixtures/xlk_news.jsonl:ro
+    profiles: ["news-fixture"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  bar-aggregator:
+    build:
+      context: .
+    command: ["/opt/arrakis/bar-aggregator"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-market_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arrakis-local-dev-only}
+      POSTGRES_SSLMODE: disable
+      ARRAKIS_BAR_CONFIG: /opt/arrakis/config/bar_aggregator.json
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
+
+  market-api:
+    build:
+      context: .
+    command: ["/opt/arrakis/market-api"]
+    ports:
+      - "${MARKET_API_HOST_PORT:-8080}:8080"
+    environment:
+      MARKET_API_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-market_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arrakis-local-dev-only}
+      POSTGRES_SSLMODE: disable
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MARKET_RAW_TOPIC: market.raw.trades
+      MARKET_API_CONSUMER_GROUP: market-api-live-v1
+      ARRAKIS_ETF_UNIVERSE: /opt/arrakis/config/etf_universe.json
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      ARRAKIS_XLK_NEWS_MODEL_PATH: /opt/arrakis/artifacts/xlk_news_xgboost.json
+      ARRAKIS_FINBERT_ONNX_PATH: /opt/arrakis/models/finbert/model.onnx
+      ARRAKIS_FINBERT_VOCAB_PATH: /opt/arrakis/models/finbert/vocab.txt
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 20
+    restart: unless-stopped
+
+  news-enricher:
+    build:
+      context: .
+    command: ["/opt/arrakis/news-enricher"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      NEWS_RAW_TOPIC: news.raw.articles
+      NEWS_ENRICHED_TOPIC: news.enriched.features
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-market_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arrakis-local-dev-only}
+      POSTGRES_SSLMODE: disable
+      NEWS_PREDICTION_CUTOFF_UNIX_MS: ${NEWS_PREDICTION_CUTOFF_UNIX_MS:-}
+      NEWS_PREDICTION_CUTOFF_ISO: ${NEWS_PREDICTION_CUTOFF_ISO:-}
+      NEWS_TRADING_DATE: ${NEWS_TRADING_DATE:-}
+      ARRAKIS_FINBERT_ONNX_PATH: /opt/arrakis/models/finbert/model.onnx
+      ARRAKIS_FINBERT_VOCAB_PATH: /opt/arrakis/models/finbert/vocab.txt
+    profiles: ["news"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres-migrations:
+        condition: service_completed_successfully
+
+  market-ui:
+    build:
+      context: ../frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      market-api:
+        condition: service_healthy
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
-    ports: ["8080:8080"]
+    ports:
+      - "8081:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-    depends_on: [kafka]
-  kafka-init:
-    image: bitnami/kafka:3.8
-    depends_on: [kafka]
-    entrypoint: ["/bin/sh", "-c"]
-    command: >-
-      "until kafka-topics.sh --bootstrap-server kafka:9092 --list; do sleep 2; done;
-      for topic in market.raw.trades market.bars.1m market.bars.5m market.late.trades market.features model.predictions market.feature.errors dead-letter.events;
-      do kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic $$topic --partitions 3 --replication-factor 1; done"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:latest
-    ports: ["9090:9090"]
-    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      market-api:
+        condition: service_healthy
+
   grafana:
     image: grafana/grafana:latest
-    ports: ["3000:3000"]
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:

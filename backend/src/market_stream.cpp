@@ -26,6 +26,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <thread>
 #include <iostream>
 #include <stdexcept>
@@ -34,6 +35,7 @@
 #include <vector>
 #include <random>
 #include <atomic>
+#include <unordered_set>
 
 namespace { volatile std::sig_atomic_t g_running = 1; void stop_signal(int) { g_running = 0; } }
 
@@ -49,6 +51,7 @@ namespace {
 struct Options {
     std::vector<std::string> symbols;
     std::size_t max_events{};
+    std::string fixture_path;
 };
 
 [[nodiscard]] std::string trim_upper(std::string_view input) {
@@ -95,12 +98,13 @@ struct Options {
 }
 
 void print_usage(std::ostream& output) {
-    output << "Usage: arrakis-market-stream [--symbols IWM,SPY] [--max-events N]\n"
+    output << "Usage: market-ingestion [--symbols IWM,SPY] [--max-events N] [--fixture FILE]\n"
               "\n"
               "Environment:\n"
-              "  FINNHUB_API_KEY      Finnhub API token\n"
+              "  FINNHUB_API_KEY      Finnhub API token (live mode only)\n"
               "\n"
-              "Defaults to the configured ETF universe. A max-events value of 0 streams until interrupted.\n";
+              "Defaults to the configured ETF universe. A max-events value of 0 streams until interrupted.\n"
+              "Fixture files are JSONL Finnhub trade frames and use the same validation and Kafka path as live data.\n";
 }
 
 [[nodiscard]] Options parse_options(int argc, char* argv[]) {
@@ -119,6 +123,8 @@ void print_usage(std::ostream& output) {
             options.symbols = split_symbols(value);
         } else if (argument == "--max-events") {
             options.max_events = parse_size(value, argument);
+        } else if (argument == "--fixture") {
+            options.fixture_path = value;
         } else {
             throw std::runtime_error("Unknown option: " + std::string(argument));
         }
@@ -150,27 +156,67 @@ template <typename WebSocket>
     return arrakis::market::parse_finnhub_frame(beast::buffers_to_string(buffer.data()));
 }
 
-void log_controls(const std::vector<arrakis::market::ControlMessage>& controls) {
-    for (const auto& control : controls) {
-        if (control.kind == arrakis::market::ControlKind::error) {
-            throw std::runtime_error(
-                "Finnhub error: " + control.message
-            );
-        }
-        if (!control.message.empty()) {
-            std::cerr << "Finnhub: " << control.message << '\n';
-        }
-    }
-}
-
 void run(const Options& options) {
-    const auto api_key = required_environment_variable("FINNHUB_API_KEY");
     const auto config_path = [] { const char* value = std::getenv("ARRAKIS_INGESTION_CONFIG"); return value == nullptr ? std::string("config/ingestion.json") : std::string(value); }();
     const auto config = arrakis::runtime::load_ingestion_config(config_path);
     arrakis::runtime::Metrics metrics;
     arrakis::runtime::MetricsServer metrics_server(metrics, config.metrics_port);
     const auto brokers = [] { const char* value = std::getenv("KAFKA_BOOTSTRAP_SERVERS"); return value == nullptr ? std::string("localhost:9092") : std::string(value); }();
     arrakis::streaming::KafkaProducer producer(brokers, "finnhub-ingestion-v1");
+    const auto& symbols = options.symbols.empty() ? config.symbols : options.symbols;
+    const std::unordered_set<std::string> allowed_symbols(symbols.begin(), symbols.end());
+    std::size_t event_count = 0;
+
+    const auto process_frame = [&](const arrakis::market::FinnhubFrame& frame) {
+        for (const auto& control : frame.controls) {
+            if (control.kind == arrakis::market::ControlKind::error) {
+                throw std::runtime_error("Finnhub error: " + control.message);
+            }
+            if (!control.message.empty()) std::cerr << "Finnhub: " << control.message << '\n';
+        }
+        for (std::size_t sequence = 0; sequence < frame.trades.size(); ++sequence) {
+            if (options.max_events != 0 && event_count >= options.max_events) break;
+            const auto& trade = frame.trades[sequence];
+            try {
+                auto normalized = arrakis::market::normalize_trade(trade, "finnhub", sequence);
+                if (!allowed_symbols.contains(normalized.symbol)) throw std::runtime_error("symbol is not in configured ETF universe");
+                normalized.received_timestamp_unix_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                const auto payload = arrakis::streaming::serialize_trade(normalized);
+                producer.publish(config.raw_trade_topic, normalized.symbol, payload);
+                producer.poll_events(std::chrono::milliseconds(0));
+                metrics.set("kafka_delivery_failures_total", static_cast<std::int64_t>(producer.delivery_failures()));
+                metrics.increment("finnhub_trade_events_total");
+                metrics.increment("kafka_trade_publish_success_total");
+                std::cout << "{\"service\":\"market-ingestion\",\"symbol\":\"" << normalized.symbol << "\",\"event_id\":\"" << normalized.event_id << "\"}\n";
+            } catch (const std::exception& error) {
+                metrics.increment("finnhub_malformed_messages_total");
+                metrics.increment("kafka_trade_publish_failure_total");
+                std::cerr << "{\"service\":\"market-ingestion\",\"error_code\":\"invalid_trade\",\"error\":\"" << error.what() << "\"}\n";
+            }
+            ++event_count;
+        }
+    };
+
+    if (!options.fixture_path.empty()) {
+        std::ifstream fixture(options.fixture_path);
+        if (!fixture) throw std::runtime_error("Unable to open fixture: " + options.fixture_path);
+        std::string line;
+        while (g_running != 0 && std::getline(fixture, line)) {
+            if (line.empty()) continue;
+            try {
+                process_frame(arrakis::market::parse_finnhub_frame(line));
+                metrics.increment("finnhub_messages_received_total");
+            } catch (const std::exception& error) {
+                metrics.increment("finnhub_malformed_messages_total");
+                std::cerr << "{\"service\":\"market-ingestion\",\"error_code\":\"malformed_finnhub_message\",\"error\":\"" << error.what() << "\"}\n";
+            }
+            if (options.max_events != 0 && event_count >= options.max_events) break;
+        }
+        producer.flush(std::chrono::seconds(5));
+        return;
+    }
+
+    const auto api_key = required_environment_variable("FINNHUB_API_KEY");
     const auto host = config.websocket_host;
     const auto target = config.websocket_path + "?token=" + api_key;
 
@@ -205,7 +251,6 @@ void run(const Options& options) {
     stream.handshake(std::string(host), target);
     stream.text(true);
 
-    const auto& symbols = options.symbols.empty() ? config.symbols : options.symbols;
     for (const auto& symbol : symbols) {
         write_json(stream, boost::json::object{
             {"type", "subscribe"},
@@ -213,7 +258,6 @@ void run(const Options& options) {
         });
     }
 
-    std::size_t event_count = 0;
     while (g_running != 0 && (options.max_events == 0 || event_count < options.max_events)) {
         beast::flat_buffer input_buffer;
         stream.read(input_buffer);
@@ -221,35 +265,11 @@ void run(const Options& options) {
         arrakis::market::FinnhubFrame frame;
         try { frame = arrakis::market::parse_finnhub_frame(raw_payload); metrics.increment("finnhub_messages_received_total"); }
         catch (const std::exception& error) {
-            const std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(raw_payload.data()), reinterpret_cast<const std::byte*>(raw_payload.data() + raw_payload.size()));
-            const auto received = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            producer.publish(config.dead_letter_topic, "", arrakis::streaming::serialize_dead_letter("market-ingestion", bytes, "malformed_finnhub_message", error.what(), received));
-            producer.flush(std::chrono::seconds(5)); producer.poll_events(std::chrono::milliseconds(0)); metrics.increment("finnhub_malformed_messages_total"); metrics.set("kafka_delivery_failures_total", static_cast<std::int64_t>(producer.delivery_failures())); continue;
+            metrics.increment("finnhub_malformed_messages_total");
+            std::cerr << "{\"service\":\"market-ingestion\",\"error_code\":\"malformed_finnhub_message\",\"error\":\"" << error.what() << "\"}\n";
+            continue;
         }
-        log_controls(frame.controls);
-        for (const auto& trade : frame.trades) {
-            try {
-                auto normalized = arrakis::market::normalize_trade(trade, "finnhub");
-                normalized.received_timestamp_unix_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-                const auto payload = arrakis::streaming::serialize_trade(normalized);
-                producer.publish(config.raw_trade_topic, normalized.symbol, payload);
-                producer.poll_events(std::chrono::milliseconds(0)); metrics.set("kafka_delivery_failures_total", static_cast<std::int64_t>(producer.delivery_failures()));
-                metrics.increment("finnhub_trade_events_total"); metrics.increment("kafka_trade_publish_success_total");
-                std::cout << "{\"service\":\"market-ingestion\",\"symbol\":\"" << normalized.symbol << "\",\"event_id\":\"" << normalized.event_id << "\"}\n";
-            } catch (const std::exception& error) {
-                const auto received = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                const auto original = arrakis::market::trade_event_to_json(trade);
-                const std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(original.data()), reinterpret_cast<const std::byte*>(original.data() + original.size()));
-                producer.publish(config.dead_letter_topic, trade.symbol, arrakis::streaming::serialize_dead_letter("market-ingestion", bytes, "invalid_trade", error.what(), received));
-                producer.flush(std::chrono::seconds(5));
-                metrics.increment("kafka_trade_publish_failure_total");
-                std::cerr << "{\"service\":\"market-ingestion\",\"error_code\":\"invalid_trade\",\"error\":\"" << error.what() << "\"}\n";
-            }
-            ++event_count;
-            if (options.max_events != 0 && event_count >= options.max_events) {
-                break;
-            }
-        }
+        process_frame(frame);
     }
 
     producer.flush(std::chrono::seconds(5));
@@ -280,7 +300,7 @@ int main(int argc, char* argv[]) {
             }
         }
     } catch (const std::exception& exception) {
-        std::cerr << "arrakis-market-stream: " << exception.what() << '\n';
+        std::cerr << "market-ingestion: " << exception.what() << '\n';
         return EXIT_FAILURE;
     }
 }

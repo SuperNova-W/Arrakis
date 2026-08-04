@@ -23,7 +23,7 @@ TEST(FinnhubNormalizationTest, ParsesAndNormalizesTradePayload) {
     EXPECT_DOUBLE_EQ(normalized.price, 520.75);
     EXPECT_DOUBLE_EQ(normalized.volume, 3.0);
     EXPECT_EQ(normalized.source_timestamp_unix_ms, 1721577104208ULL);
-    EXPECT_EQ(normalized.event_id, "finnhub:SPY:1721577104208:520.75:3:0");
+    EXPECT_EQ(normalized.event_id, "finnhub:sha256:5930a0a0ae5747c4e2abf2d06c0b864433e5dded7424190d9f71db8624eddbcf");
     EXPECT_EQ(normalized.conditions.size(), 2U);
 }
 

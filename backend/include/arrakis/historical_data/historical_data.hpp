@@ -29,6 +29,15 @@ struct CandleResponse final {
     std::vector<double> volumes;
 };
 
+struct NewsStory final {
+    std::string url;
+    std::string source;
+    std::string headline;
+    std::string summary;
+    std::int64_t published_at_unix_seconds{};
+    std::string related;
+};
+
 struct FinnhubClientConfig final {
     std::string base_url{"https://finnhub.io/api/v1"};
     std::string api_key{};
@@ -91,6 +100,12 @@ class FinnhubClient final {
         std::string_view resolution,
         std::chrono::system_clock::time_point from,
         std::chrono::system_clock::time_point to
+    );
+
+    [[nodiscard]] std::vector<NewsStory> get_company_news(
+        std::string_view symbol,
+        std::string_view from_date,
+        std::string_view to_date
     );
 
   private:

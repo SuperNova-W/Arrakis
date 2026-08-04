@@ -3,6 +3,7 @@
 #include "arrakis/market/finnhub_message.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,6 @@ struct NormalizedTrade {
     std::uint64_t received_timestamp_unix_ms{};
 };
 
-[[nodiscard]] NormalizedTrade normalize_trade(const TradeEvent& trade, std::string_view source);
+[[nodiscard]] NormalizedTrade normalize_trade(const TradeEvent& trade, std::string_view source, std::size_t sequence = 0);
 
 }  // namespace arrakis::market

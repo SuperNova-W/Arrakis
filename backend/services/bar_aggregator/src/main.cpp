@@ -1,4 +1,5 @@
 #include "arrakis/bar_aggregator/aggregation.hpp"
+#include "arrakis/database/postgres.hpp"
 #include "arrakis/streaming/kafka.hpp"
 #include "arrakis/serialization/serialization.hpp"
 #include "arrakis/runtime/config.hpp"
@@ -19,10 +20,6 @@ std::string env(const char* name, const char* fallback) {
     const char* value = std::getenv(name);
     return value == nullptr ? fallback : value;
 }
-std::int64_t now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-}
 }
 
 int main() {
@@ -35,7 +32,7 @@ int main() {
         arrakis::runtime::Metrics metrics;
         arrakis::runtime::MetricsServer metrics_server(metrics, config.metrics_port);
         arrakis::streaming::KafkaConsumer consumer(brokers, config.consumer_group, config.input_topic);
-        arrakis::streaming::KafkaProducer producer(brokers, "bar-aggregator-v1");
+        arrakis::database::PostgresPool database(arrakis::database::database_config_from_environment());
         arrakis::bar_aggregator::BarAggregator aggregator(
             config.bar_interval_seconds,
             config.allowed_lateness_seconds,
@@ -46,7 +43,6 @@ int main() {
         while (running != 0) {
             const auto record = consumer.poll(std::chrono::milliseconds(250));
             if (!record) {
-                producer.poll_events(std::chrono::milliseconds(0));
                 continue;
             }
             try {
@@ -59,37 +55,24 @@ int main() {
                 const auto lateness_ms = static_cast<std::uint64_t>(config.allowed_lateness_seconds) * 1000U;
                 const auto watermark = maximum_event_time[trade.symbol] > lateness_ms
                     ? maximum_event_time[trade.symbol] - lateness_ms : 0U;
-                bool output_pending = false;
-                for (const auto& bar : aggregator.advanceWatermarkForSymbol(trade.symbol, watermark)) {
-                    producer.publish(config.output_topic, bar.symbol, arrakis::streaming::serialize_bar(bar));
-                    output_pending = true;
-                    metrics.increment("bars_published_total");
-                    metrics.increment("bars_finalized_total");
+                const auto one_minute = aggregator.advanceWatermarkForSymbol(trade.symbol, watermark);
+                const auto five_minute = aggregator.drainCompletedFiveMinuteBars();
+                if (!one_minute.empty() || !five_minute.empty()) {
+                    database.persist_bars(one_minute, five_minute);
+                    metrics.increment("database_bar_insert_success_total", one_minute.size() + five_minute.size());
+                    metrics.increment("one_minute_bars_finalized_total", one_minute.size());
+                    metrics.increment("five_minute_bars_finalized_total", five_minute.size());
                 }
-                for (const auto& late : aggregator.drainLateTrades()) {
-                    producer.publish(config.late_trade_topic, late.trade.symbol,
-                                     arrakis::streaming::serialize_late_trade(late.trade, late.reason));
-                    output_pending = true;
-                    metrics.increment("late_trades_total");
-                }
-                if (output_pending) producer.flush(std::chrono::seconds(5));
-                metrics.set("kafka_delivery_failures_total",
-                            static_cast<std::int64_t>(producer.delivery_failures()));
-                producer.poll_events(std::chrono::milliseconds(0));
+                const auto late_trades = aggregator.drainLateTrades();
+                metrics.increment("late_trades_total", late_trades.size());
                 consumer.commit(*record);
             } catch (const std::exception& error) {
-                const auto dead_letter = arrakis::streaming::serialize_dead_letter(
-                    "bar-aggregator", record->payload, "invalid_trade_event", error.what(), now_ms());
-                producer.publish(config.dead_letter_topic, record->key, dead_letter);
-                producer.flush(std::chrono::seconds(5));
-                producer.poll_events(std::chrono::milliseconds(0));
                 consumer.commit(*record);
                 metrics.increment("trade_events_rejected_total");
-                std::cerr << "{\"service\":\"bar-aggregator\",\"error\":\""
+                std::cerr << "{\"service\":\"bar-aggregator\",\"event\":\"rejected\",\"error\":\""
                           << error.what() << "\"}\n";
             }
         }
-        producer.flush(std::chrono::seconds(5));
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
         std::cerr << "{\"service\":\"bar-aggregator\",\"fatal\":\""

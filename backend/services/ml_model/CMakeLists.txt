@@ -45,4 +45,20 @@ if(ARRAKIS_BUILD_XGBOOST_TRAINER)
                 -Werror
         )
     endif()
+
+    add_executable(arrakis-import-fnspid src/fnspid_import.cpp)
+    target_compile_features(arrakis-import-fnspid PRIVATE cxx_std_20)
+    target_link_libraries(arrakis-import-fnspid PRIVATE OpenSSL::Crypto)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(
+            arrakis-import-fnspid
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+                -Wconversion
+                -Wshadow
+                -Werror
+        )
+    endif()
 endif()

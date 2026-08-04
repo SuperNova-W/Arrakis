@@ -4,3 +4,4 @@ dist/
 *.local
 *-debug.log
 .DS_Store
+.env

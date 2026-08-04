@@ -221,20 +221,20 @@ CandleResponse FinnhubClient::get_candles(
         response.status = "ok";
     }
 
-    const auto parse_array = [](const boost::json::value& source, std::vector<std::int64_t>& target) {
+    const auto parse_array = [](const boost::json::value& source, std::vector<std::int64_t>& output) {
         if (!source.is_array()) {
             return;
         }
         for (const auto& item : source.as_array()) {
-            target.push_back(static_cast<std::int64_t>(item.as_int64()));
+            output.push_back(static_cast<std::int64_t>(item.as_int64()));
         }
     };
-    const auto parse_double_array = [](const boost::json::value& source, std::vector<double>& target) {
+    const auto parse_double_array = [](const boost::json::value& source, std::vector<double>& output) {
         if (!source.is_array()) {
             return;
         }
         for (const auto& item : source.as_array()) {
-            target.push_back(item.as_double());
+            output.push_back(item.as_double());
         }
     };
 
@@ -257,6 +257,24 @@ CandleResponse FinnhubClient::get_candles(
         parse_double_array(it->value(), response.volumes);
     }
     return response;
+}
+
+std::vector<NewsStory> FinnhubClient::get_company_news(std::string_view symbol, std::string_view from_date, std::string_view to_date) {
+    std::ostringstream target;
+    target << "/company-news?symbol=" << symbol << "&from=" << from_date << "&to=" << to_date << "&token=" << config_.api_key;
+    const auto body = fetch_http_body("finnhub.io", target.str(), std::chrono::seconds{config_.request_timeout_seconds});
+    const auto value = boost::json::parse(body);
+    if (!value.is_array()) throw std::runtime_error{"Finnhub company-news response is not an array"};
+    std::vector<NewsStory> output;
+    for (const auto& item : value.as_array()) {
+        if (!item.is_object()) continue;
+        const auto& object = item.as_object();
+        const auto string_field = [&](const char* key) { const auto it = object.find(key); return it != object.end() && it->value().is_string() ? std::string(it->value().as_string()) : std::string{}; };
+        const auto integer_field = [&](const char* key) { const auto it = object.find(key); return it != object.end() && it->value().is_int64() ? it->value().as_int64() : static_cast<std::int64_t>(0); };
+        NewsStory story{string_field("url"), string_field("source"), string_field("headline"), string_field("summary"), integer_field("datetime"), string_field("related")};
+        if (!story.url.empty() && !story.headline.empty() && story.published_at_unix_seconds > 0) output.push_back(std::move(story));
+    }
+    return output;
 }
 
 std::chrono::system_clock::time_point parse_datetime(std::string_view value) {

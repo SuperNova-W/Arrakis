@@ -160,10 +160,13 @@ class Booster final {
 
 struct Options final {
     std::filesystem::path input;
-    std::filesystem::path model_output{"artifacts/xgboost_baseline.json"};
-    std::string target{"target_up_5d"};
+    std::filesystem::path model_output{"artifacts/xlk_news_xgboost.json"};
+    std::string target{"target_next_close_up"};
     double validation_fraction{0.2};
     int rounds{75};
+    std::string train_end;
+    std::string validation_end;
+    std::string test_end;
 };
 
 [[nodiscard]] Options parse_options(const int argc, char** argv) {
@@ -189,13 +192,22 @@ struct Options final {
             options.validation_fraction = std::stod(std::string{require_value()});
         } else if (argument == "--rounds") {
             options.rounds = std::stoi(std::string{require_value()});
+        } else if (argument == "--train-end") {
+            options.train_end = require_value();
+        } else if (argument == "--validation-end") {
+            options.validation_end = require_value();
+        } else if (argument == "--test-end") {
+            options.test_end = require_value();
         } else if (argument == "--help") {
             std::cout
-                << "Usage: arrakis-train-xgboost --input <features.csv> [options]\n\n"
+                << "Usage: arrakis-train-xgboost --input <xlk_news_features.csv> [options]\n\n"
                 << "Options:\n"
-                << "  --target <name>                 Target column (default: target_up_5d)\n"
-                << "  --model-output <path>           JSON model output path\n"
+                << "  --target <name>                 Target column (default: target_next_close_up)\n"
+                << "  --model-output <path>           XGBoost model output path\n"
                 << "  --validation-fraction <0-0.5>   Most recent fraction for validation\n"
+                << "  --train-end <YYYY-MM-DD>        Exact training boundary\n"
+                << "  --validation-end <YYYY-MM-DD>   Exact validation boundary\n"
+                << "  --test-end <YYYY-MM-DD>         Exact held-out boundary\n"
                 << "  --rounds <count>                Boosting rounds (default: 75)\n";
             std::exit(0);
         } else {
@@ -206,15 +218,24 @@ struct Options final {
     if (options.input.empty()) {
         throw std::invalid_argument{"--input is required"};
     }
+    if (options.target != "target_next_close_up") {
+        throw std::invalid_argument{"The XLK news pipeline requires target_next_close_up"};
+    }
     if (options.rounds <= 0) {
         throw std::invalid_argument{"--rounds must be positive"};
+    }
+    const auto exact_split = !options.train_end.empty() || !options.validation_end.empty() ||
+                             !options.test_end.empty();
+    if (exact_split && (options.train_end.empty() || options.validation_end.empty() ||
+                        options.test_end.empty())) {
+        throw std::invalid_argument{"All exact split boundaries are required together"};
     }
     return options;
 }
 
 void write_metrics(
     const std::filesystem::path& model_path,
-    const arrakis::model::DatasetSplit& split,
+    const arrakis::model::DatasetThreeWaySplit& split,
     const arrakis::model::BinaryMetrics& metrics
 ) {
     auto metrics_path = model_path;
@@ -228,8 +249,11 @@ void write_metrics(
            << "{\n"
            << "  \"train_rows\": " << split.train.row_count() << ",\n"
            << "  \"validation_rows\": " << split.validation.row_count() << ",\n"
+           << "  \"test_rows\": " << split.test.row_count() << ",\n"
            << "  \"validation_start\": \"" << split.validation.dates.front() << "\",\n"
            << "  \"validation_end\": \"" << split.validation.dates.back() << "\",\n"
+           << "  \"test_start\": \"" << split.test.dates.front() << "\",\n"
+           << "  \"test_end\": \"" << split.test.dates.back() << "\",\n"
            << "  \"accuracy\": " << metrics.accuracy << ",\n"
            << "  \"log_loss\": " << metrics.log_loss << ",\n"
            << "  \"roc_auc\": " << metrics.roc_auc << ",\n"
@@ -238,14 +262,34 @@ void write_metrics(
            << "}\n";
 }
 
+void write_manifest(const std::filesystem::path& model_path, const arrakis::model::Dataset& dataset,
+                    const arrakis::model::DatasetThreeWaySplit& split) {
+    auto manifest_path = model_path;
+    manifest_path += ".manifest.json";
+    std::ofstream output{manifest_path};
+    if (!output) throw std::runtime_error{"Could not write model manifest: " + manifest_path.string()};
+    output << "{\n  \"model_id\": \"xlk-finbert-xgboost-v1\",\n  \"model_type\": \"xgboost\",\n  \"symbol\": \"XLK\",\n  \"target\": \"target_next_close_up\",\n  \"classification_threshold\": 0.5,\n  \"finbert_version\": \"" << (std::getenv("ARRAKIS_FINBERT_VERSION") == nullptr ? "finbert-v1" : std::getenv("ARRAKIS_FINBERT_VERSION")) << "\",\n  \"tokenizer_version\": \"" << (std::getenv("ARRAKIS_FINBERT_TOKENIZER_VERSION") == nullptr ? "finbert-tokenizer-v1" : std::getenv("ARRAKIS_FINBERT_TOKENIZER_VERSION")) << "\",\n  \"aggregation_version\": \"xlk-news-features-v1\",\n  \"feature_schema_hash\": \"" << (std::getenv("ARRAKIS_FEATURE_SCHEMA_HASH") == nullptr ? "xlk-news-features-v1" : std::getenv("ARRAKIS_FEATURE_SCHEMA_HASH")) << "\",\n  \"train_start\": \"" << split.train.dates.front() << "\",\n  \"train_end\": \"" << split.train.dates.back() << "\",\n  \"validation_start\": \"" << split.validation.dates.front() << "\",\n  \"validation_end\": \"" << split.validation.dates.back() << "\",\n  \"feature_names\": [";
+    for (std::size_t index = 0; index < dataset.feature_names.size(); ++index) { if (index > 0) output << ", "; output << "\"" << dataset.feature_names[index] << "\""; }
+    output << "]\n}\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
         const auto options = parse_options(argc, argv);
         const auto dataset = arrakis::model::load_csv(options.input, options.target);
-        const auto split =
+        const auto legacy_split =
             arrakis::model::chronological_split(dataset, options.validation_fraction);
+        const auto split = options.train_end.empty()
+                               ? arrakis::model::DatasetThreeWaySplit{
+                                     .train = legacy_split.train,
+                                     .validation = legacy_split.validation,
+                                     .test = legacy_split.validation,
+                                 }
+                               : arrakis::model::chronological_split_by_dates(
+                                     dataset, options.train_end, options.validation_end, options.test_end
+                                 );
 
         std::cout << "Loaded " << dataset.row_count() << " rows and "
                   << dataset.feature_count() << " features\n"
@@ -257,6 +301,7 @@ int main(int argc, char** argv) {
 
         const DMatrix train_matrix{split.train};
         const DMatrix validation_matrix{split.validation};
+        const DMatrix test_matrix{split.test};
         const std::vector<DMatrixHandle> matrices{
             train_matrix.get(), validation_matrix.get()
         };
@@ -283,12 +328,13 @@ int main(int argc, char** argv) {
             }
         }
 
-        const auto probabilities = booster.predict(validation_matrix.get());
+        const auto test_probabilities = booster.predict(test_matrix.get());
         const auto metrics = arrakis::model::evaluate_binary_classifier(
-            split.validation.labels, probabilities
+            split.test.labels, test_probabilities
         );
         booster.save(options.model_output);
         write_metrics(options.model_output, split, metrics);
+        write_manifest(options.model_output, dataset, split);
 
         std::cout << std::fixed << std::setprecision(4)
                   << "\nValidation metrics\n"

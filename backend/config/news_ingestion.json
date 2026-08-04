@@ -1,0 +1,9 @@
+{
+  "raw_topic": "news.raw.articles",
+  "enriched_topic": "news.enriched.features",
+  "consumer_group": "news-enricher-v1",
+  "universe": "XLK",
+  "approved_sources": ["fixture", "finnhub-company-news"],
+  "max_article_bytes": 200000,
+  "max_queue_size": 256
+}

@@ -1,0 +1,4 @@
+symbol,effective_from,effective_to,weight,source
+# Provide one row per constituent interval. Do not replace this with today's XLK holdings.
+# Example only; remove this comment before use.
+AAPL,2016-01-01,2016-12-31,0.10,point-in-time-source

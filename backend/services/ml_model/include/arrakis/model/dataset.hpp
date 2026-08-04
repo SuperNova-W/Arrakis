@@ -24,6 +24,12 @@ struct DatasetSplit final {
     Dataset validation;
 };
 
+struct DatasetThreeWaySplit final {
+    Dataset train;
+    Dataset validation;
+    Dataset test;
+};
+
 // Expected CSV shape:
 //   date,<numeric feature columns>,<target column>
 //
@@ -40,6 +46,16 @@ struct DatasetSplit final {
 [[nodiscard]] DatasetSplit chronological_split(
     const Dataset& dataset,
     double validation_fraction
+);
+
+// Uses inclusive ISO date boundaries and preserves the original ordering.
+// Rows outside the requested windows are rejected rather than silently placed
+// into a neighboring split.
+[[nodiscard]] DatasetThreeWaySplit chronological_split_by_dates(
+    const Dataset& dataset,
+    const std::string& train_end,
+    const std::string& validation_end,
+    const std::string& test_end
 );
 
 }  // namespace arrakis::model

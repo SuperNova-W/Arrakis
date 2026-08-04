@@ -1,0 +1,79 @@
+{
+  "benchmark": "arrakis-kafka-transport",
+  "date": "2026-07-29",
+  "environment": {
+    "machine": "MacBook Air",
+    "chip": "Apple M5",
+    "cpu_cores": 10,
+    "memory_gb": 24,
+    "os": "macOS 26.3",
+    "build_type": "Release",
+    "kafka_version": "3.8.0",
+    "broker_count": 1,
+    "topic_partitions": 6,
+    "replication_factor": 1,
+    "producer_count": 1,
+    "consumer_count": 1,
+    "symbol_keys": 18,
+    "producer_acks": "all",
+    "producer_idempotence": true,
+    "compression": "zstd"
+  },
+  "transport_capacity_trials": [
+    {
+      "events": 100000,
+      "warmup_events": 5000,
+      "throughput_events_per_second": 441354,
+      "latency_mean_ms": 19.9181,
+      "latency_p50_ms": 19,
+      "latency_p95_ms": 32,
+      "latency_p99_ms": 36,
+      "average_payload_bytes": 171.111,
+      "manual_offset_commit_per_event": false,
+      "delivery_failures": 0
+    },
+    {
+      "events": 100000,
+      "warmup_events": 5000,
+      "throughput_events_per_second": 397950,
+      "latency_mean_ms": 15.9556,
+      "latency_p50_ms": 16,
+      "latency_p95_ms": 22,
+      "latency_p99_ms": 24,
+      "average_payload_bytes": 171.111,
+      "manual_offset_commit_per_event": false,
+      "delivery_failures": 0
+    },
+    {
+      "events": 100000,
+      "warmup_events": 5000,
+      "throughput_events_per_second": 340795,
+      "latency_mean_ms": 20.9608,
+      "latency_p50_ms": 17,
+      "latency_p95_ms": 42,
+      "latency_p99_ms": 48,
+      "average_payload_bytes": 171.111,
+      "manual_offset_commit_per_event": false,
+      "delivery_failures": 0
+    }
+  ],
+  "manual_offset_commit_smoke_trial": {
+    "events": 10000,
+    "warmup_events": 500,
+    "throughput_events_per_second": 254482,
+    "latency_mean_ms": 21.3283,
+    "latency_p50_ms": 22,
+    "latency_p95_ms": 31,
+    "latency_p99_ms": 32,
+    "average_payload_bytes": 170.111,
+    "manual_offset_commit_per_event": true,
+    "delivery_failures": 0
+  },
+  "summary": {
+    "transport_min_throughput_events_per_second": 340795,
+    "transport_median_throughput_events_per_second": 397950,
+    "transport_max_p95_latency_ms": 42,
+    "transport_median_p95_latency_ms": 32
+  },
+  "scope": "Protobuf serialization, idempotent Kafka production, broker transport, consumption, and Protobuf deserialization only. It excludes PostgreSQL persistence, feature engineering, inference, and risk management."
+}

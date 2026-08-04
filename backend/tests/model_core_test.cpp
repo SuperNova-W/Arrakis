@@ -35,6 +35,14 @@ void test_chronological_split() {
     require(split.validation.row_count() == 2, "Expected 2 validation rows");
     require(split.train.dates.back() == "2026-01-08", "Training boundary moved");
     require(split.validation.dates.front() == "2026-01-09", "Validation boundary moved");
+
+    const auto exact = arrakis::model::chronological_split_by_dates(
+        dataset, "2026-01-06", "2026-01-08", "2026-01-10"
+    );
+    require(exact.train.row_count() == 6, "Exact split training boundary moved");
+    require(exact.validation.row_count() == 2, "Exact split validation boundary moved");
+    require(exact.test.row_count() == 2, "Exact split test boundary moved");
+    require(exact.test.dates.front() == "2026-01-09", "Exact split test start moved");
 }
 
 void test_binary_metrics() {
