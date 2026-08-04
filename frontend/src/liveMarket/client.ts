@@ -12,6 +12,7 @@ type MessageListener = (message: LiveMarketMessage | null, status: ConnectionSta
 
 const MAX_RECONNECTING_ATTEMPTS = 5
 const MAX_RECONNECT_DELAY_MS = 30_000
+const OFFLINE_RETRY_DELAY_MS = 5 * 60_000
 
 function websocketEndpoint() {
   const configured = import.meta.env.VITE_MARKET_API_WS_URL?.trim()
@@ -159,13 +160,17 @@ class LiveMarketClient {
       this.setStatus('offline')
       return
     }
-    this.reconnectAttempts += 1
-    this.setStatus(this.reconnectAttempts > MAX_RECONNECTING_ATTEMPTS ? 'offline' : 'reconnecting')
+    // Cap attempts once exhausted rather than letting the counter grow unbounded for the
+    // lifetime of a long-lived tab with no reachable backend.
+    this.reconnectAttempts = Math.min(this.reconnectAttempts + 1, MAX_RECONNECTING_ATTEMPTS + 1)
+    const exhausted = this.reconnectAttempts > MAX_RECONNECTING_ATTEMPTS
+    this.setStatus(exhausted ? 'offline' : 'reconnecting')
     this.clearReconnectTimer()
-    const delay = Math.min(
-      MAX_RECONNECT_DELAY_MS,
-      1_000 * 2 ** Math.min(this.reconnectAttempts - 1, 5),
-    )
+    // After giving up on fast retries, fall back to a slow steady-state cadence so the UI can
+    // still self-heal if the backend comes back, without hammering an unreachable host every 30s.
+    const delay = exhausted
+      ? OFFLINE_RETRY_DELAY_MS
+      : Math.min(MAX_RECONNECT_DELAY_MS, 1_000 * 2 ** Math.min(this.reconnectAttempts - 1, 5))
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null
       this.open()
