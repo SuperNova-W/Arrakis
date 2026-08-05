@@ -84,16 +84,17 @@ services:
   news-ingestion:
     build:
       context: .
-    command: ["/opt/arrakis/news-ingestion", "--fixture", "/opt/arrakis/fixtures/xlk_news.jsonl"]
+    command: ["/opt/arrakis/news-ingestion", "--finnhub-poll", "XLK"]
     environment:
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       NEWS_RAW_TOPIC: news.raw.articles
-    volumes:
-      - ./tests/fixtures/xlk_news.jsonl:/opt/arrakis/fixtures/xlk_news.jsonl:ro
-    profiles: ["news-fixture"]
+      NEWS_POLL_INTERVAL_SECONDS: ${NEWS_POLL_INTERVAL_SECONDS:-900}
+      NEWS_POLL_LOOKBACK_DAYS: ${NEWS_POLL_LOOKBACK_DAYS:-3}
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   bar-aggregator:
     build:
@@ -166,14 +167,16 @@ services:
       NEWS_PREDICTION_CUTOFF_UNIX_MS: ${NEWS_PREDICTION_CUTOFF_UNIX_MS:-}
       NEWS_PREDICTION_CUTOFF_ISO: ${NEWS_PREDICTION_CUTOFF_ISO:-}
       NEWS_TRADING_DATE: ${NEWS_TRADING_DATE:-}
+      ARRAKIS_FEATURE_SCHEMA_HASH: ${ARRAKIS_FEATURE_SCHEMA_HASH:-xlk-combined-features-v1}
+      ARRAKIS_XLK_NEWS_FEATURE_COUNT: ${ARRAKIS_XLK_NEWS_FEATURE_COUNT:-36}
       ARRAKIS_FINBERT_ONNX_PATH: /opt/arrakis/models/finbert/model.onnx
       ARRAKIS_FINBERT_VOCAB_PATH: /opt/arrakis/models/finbert/vocab.txt
-    profiles: ["news"]
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       postgres-migrations:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   market-ui:
     build:

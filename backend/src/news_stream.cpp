@@ -13,11 +13,27 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_set>
 
 namespace {
 std::string env(const char* name, std::string fallback = {}) {
     const char* value = std::getenv(name);
     return value == nullptr ? std::move(fallback) : std::string(value);
+}
+
+std::int64_t env_int(const char* name, std::int64_t fallback) {
+    const auto value = env(name);
+    return value.empty() ? fallback : std::stoll(value);
+}
+
+std::string utc_date(std::chrono::system_clock::time_point value) {
+    const auto time = std::chrono::system_clock::to_time_t(value);
+    std::tm utc{};
+    gmtime_r(&time, &utc);
+    std::ostringstream output;
+    output << std::put_time(&utc, "%Y-%m-%d");
+    return output.str();
 }
 
 std::string sha256(std::string_view value) {
@@ -73,7 +89,10 @@ int main(int argc, char** argv) {
     try {
         arrakis::streaming::KafkaProducer producer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), "news-ingestion-v1");
         std::uint64_t published = 0;
+        std::unordered_set<std::string> published_ids;
         const auto publish = [&](const arrakis::news::Article& article) {
+            if (published_ids.size() >= 10000) published_ids.clear();
+            if (!published_ids.insert(article.article_id).second) return;
             const auto payload = arrakis::news::serialize_article(article);
             producer.publish(env("NEWS_RAW_TOPIC", "news.raw.articles"), "XLK", payload);
             producer.poll_events(std::chrono::milliseconds{0});
@@ -87,8 +106,24 @@ int main(int argc, char** argv) {
         } else if (argc == 5 && std::string_view(argv[1]) == "--finnhub") {
             arrakis::historical_data::FinnhubClient client({.api_key = env("FINNHUB_API_KEY")});
             for (const auto& story : client.get_company_news(argv[2], argv[3], argv[4])) publish(from_finnhub(story, argv[2]));
+        } else if (argc == 3 && std::string_view(argv[1]) == "--finnhub-poll") {
+            const std::string symbol = argv[2];
+            const auto interval = std::chrono::seconds{env_int("NEWS_POLL_INTERVAL_SECONDS", 900)};
+            const auto lookback = std::chrono::hours{24 * env_int("NEWS_POLL_LOOKBACK_DAYS", 3)};
+            if (interval.count() <= 0 || lookback.count() <= 0) throw std::invalid_argument("NEWS_POLL_INTERVAL_SECONDS and NEWS_POLL_LOOKBACK_DAYS must be positive");
+            for (;;) {
+                const auto now = std::chrono::system_clock::now();
+                const auto from = utc_date(now - lookback);
+                const auto to = utc_date(now);
+                arrakis::historical_data::FinnhubClient client({.api_key = env("FINNHUB_API_KEY")});
+                for (const auto& story : client.get_company_news(symbol, from, to)) publish(from_finnhub(story, symbol));
+                producer.flush(std::chrono::seconds{10});
+                std::cerr << "{\"service\":\"news-ingestion\",\"event\":\"poll_complete\",\"symbol\":\""
+                          << symbol << "\",\"published_total\":" << published << "}\n";
+                std::this_thread::sleep_for(interval);
+            }
         } else {
-            throw std::invalid_argument("Usage: news-ingestion --fixture <jsonl> | --finnhub <symbol> <from YYYY-MM-DD> <to YYYY-MM-DD>");
+            throw std::invalid_argument("Usage: news-ingestion --fixture <jsonl> | --finnhub <symbol> <from YYYY-MM-DD> <to YYYY-MM-DD> | --finnhub-poll <symbol>");
         }
         producer.flush(std::chrono::seconds{10});
         std::cout << "published_news_articles=" << published << "\n";
