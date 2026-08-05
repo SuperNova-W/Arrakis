@@ -13,6 +13,9 @@ symbol,effective_from,effective_to,weight,source
 
 The importer fails if this file is missing. It never substitutes current XLK
 holdings for historical dates, because that would introduce survivorship bias.
+Each SEC N-PORT row is treated as a point-in-time snapshot. For import, an
+open-ended `effective_to` is closed on the day before the next snapshot for
+the same symbol; the applied policy is recorded in the import manifest.
 
 After downloading the upstream file to `data/fnspid/raw/nasdaq_exteral_data.csv`:
 

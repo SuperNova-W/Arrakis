@@ -116,6 +116,19 @@ struct Options final {
     throw std::runtime_error{"Unsupported FNSPID date format: " + value};
 }
 
+[[nodiscard]] std::string previous_date(const std::string& value) {
+    std::tm parsed{};
+    std::istringstream input{value};
+    input >> std::get_time(&parsed, "%Y-%m-%d");
+    if (input.fail()) throw std::runtime_error{"Invalid holdings date: " + value};
+    const auto timestamp = timegm(&parsed) - 24 * 60 * 60;
+    std::tm output{};
+    gmtime_r(&timestamp, &output);
+    char formatted[11]{};
+    std::strftime(formatted, sizeof(formatted), "%Y-%m-%d", &output);
+    return formatted;
+}
+
 [[nodiscard]] std::string normalize_utc_timestamp(std::string value) {
     value = trim(std::move(value));
     if (value.ends_with(" UTC")) {
@@ -176,6 +189,18 @@ struct Options final {
         result[row[0]].push_back(Holding{row[1].substr(0, 10), row[2].substr(0, 10)});
     }
     if (result.empty()) throw std::runtime_error{"Holdings history is empty"};
+    for (auto& [symbol, rows] : result) {
+        static_cast<void>(symbol);
+        std::ranges::sort(rows, [](const auto& left, const auto& right) {
+            return left.from < right.from;
+        });
+        for (std::size_t index = 0; index + 1 < rows.size(); ++index) {
+            if (rows[index].to == "2099-12-31") rows[index].to = previous_date(rows[index + 1].from);
+            if (rows[index].to >= rows[index + 1].from) {
+                throw std::runtime_error{"Overlapping holdings intervals for " + symbol};
+            }
+        }
+    }
     return result;
 }
 
@@ -275,7 +300,8 @@ int main(int argc, char** argv) {
                  << "  \"rows_skipped\": " << skipped << ",\n"
                  << "  \"missing_timestamps\": " << missing_timestamp << ",\n"
                  << "  \"duplicates\": " << duplicates << ",\n"
-                 << "  \"holdings_fallback_used\": false\n}\n";
+                 << "  \"holdings_fallback_used\": false,\n"
+                 << "  \"holdings_interval_policy\": \"snapshot applies from effective_from until the day before the next snapshot\"\n}\n";
         std::cout << "FNSPID import complete: " << written << " rows written, " << skipped
                   << " skipped, " << duplicates << " duplicates\n";
         return 0;
