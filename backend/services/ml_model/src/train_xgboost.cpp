@@ -1260,6 +1260,10 @@ int main(const int argc, char** argv) {
         const auto test_metrics = arrakis::model::evaluate_binary_classifier(
             split.test.labels, test_predictions
         );
+        const auto validation_diagnostics = summarize_predictions(
+            split.validation.labels, validation_predictions
+        );
+        const auto test_diagnostics = summarize_predictions(split.test.labels, test_predictions);
         const auto validation_year_metrics = evaluate_by_year(
             split.validation, validation_predictions
         );
@@ -1274,6 +1278,8 @@ int main(const int argc, char** argv) {
             training,
             validation_metrics,
             test_metrics,
+            validation_diagnostics,
+            test_diagnostics,
             validation_year_metrics,
             test_year_metrics,
             search_results.size()
@@ -1305,6 +1311,18 @@ int main(const int argc, char** argv) {
                   << "  ROC AUC:  " << test_metrics.roc_auc << '\n'
                   << "  Actual positive rate: " << test_metrics.positive_rate << '\n'
                   << "  Mean probability:     " << test_metrics.mean_probability << '\n'
+                  << "  Probability min/max:  " << test_diagnostics.minimum << "/"
+                  << test_diagnostics.maximum << '\n'
+                  << "  Probability stddev:   " << test_diagnostics.standard_deviation << '\n'
+                  << "  Majority baseline:    " << test_diagnostics.majority_accuracy
+                  << " (label " << test_diagnostics.majority_label << ")\n"
+                  << "  Confusion matrix TN/FP/FN/TP: "
+                  << test_diagnostics.confusion_matrix.true_negative << '/'
+                  << test_diagnostics.confusion_matrix.false_positive << '/'
+                  << test_diagnostics.confusion_matrix.false_negative << '/'
+                  << test_diagnostics.confusion_matrix.true_positive << '\n'
+                  << "  Constant prediction:  "
+                  << (test_diagnostics.is_constant() ? "yes" : "no") << '\n'
                   << "Saved model: " << options.model_output << '\n';
         return 0;
     } catch (const std::exception& error) {
