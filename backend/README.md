@@ -26,8 +26,14 @@ The API fails closed when either versioned artifact is missing or the feature sc
 - `bar-aggregator`: event-time 1-minute aggregation, 5-minute derivation, and PostgreSQL writer.
 - `market-api`: Boost.Beast REST/WebSocket gateway with Kafka-backed in-memory market bars;
   PostgreSQL is used only by its ML/news routes.
-- `news-ingestion`: approved-source/fixture JSONL normalizer and protobuf Kafka producer.
+- `news-ingestion`: approved-source/fixture JSONL normalizer and protobuf Kafka producer; the default Compose command polls Finnhub company news for XLK.
 - `news-enricher`: point-in-time XLK filter, FinBERT ONNX inference, PostgreSQL writer, and daily aggregator.
+
+The older `services/feature_engine/` and `services/prediction_service/` pair is
+an archived, market-bars-only benchmark slice retained for a future replay or
+price-only research phase. It is intentionally not wired into Docker or the
+frontend; the active recommendation path is the FinBERT-plus-XGBoost pipeline.
+See [`docs/legacy-ml-path.md`](docs/legacy-ml-path.md).
 - `market-ui`: React/Vite frontend in `../frontend`.
 
 The existing feature-engine and prediction-service sources remain in the repository for a future ML
@@ -78,7 +84,7 @@ Copy the environment file and set credentials:
 cp .env.example .env
 # set FINNHUB_API_KEY for the live Finnhub stream
 # replace the local-only POSTGRES_PASSWORD before using any shared environment
-# set ARRAKIS_FINBERT_ONNX_PATH and ARRAKIS_FINBERT_VOCAB_PATH when running the news profile
+# fetch the exact FinBERT files before building; see models/finbert/README.md
 docker compose up --build
 ```
 
@@ -108,6 +114,11 @@ PostgreSQL: localhost:5432
 Set `MARKET_API_HOST_PORT` if port 8080 is already in use. If the browser UI origin changes, set
 `CORS_ALLOWED_ORIGINS` to that exact origin (for example `http://127.0.0.1:5173`) before starting
 the API.
+
+The default news services are continuous: `news-ingestion` polls Finnhub every 15 minutes with a
+three-day lookback, and `news-enricher` derives the current US trading date when the fixed replay
+window variables are unset. Override `NEWS_POLL_INTERVAL_SECONDS` and
+`NEWS_POLL_LOOKBACK_DAYS` in `.env` for another cadence.
 
 The local migration container applies the SQL files in `migrations/` to PostgreSQL. In production,
 point `SUPABASE_DB_URL` at the Supabase SSL connection string and apply the same migrations through
