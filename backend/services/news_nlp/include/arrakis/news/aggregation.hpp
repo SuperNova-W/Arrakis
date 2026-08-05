@@ -1,6 +1,7 @@
 #pragma once
 
 #include "arrakis/serialization/news_serialization.hpp"
+#include "arrakis/news/feature_schema.hpp"
 
 #include <chrono>
 #include <string>
@@ -25,8 +26,9 @@ struct DailyNewsFeatures final {
     std::string coverage_status{"empty"};
     std::vector<std::string> feature_names;
     std::vector<double> values;
-    std::string feature_schema_hash{"xlk-news-features-v1"};
+    std::string feature_schema_hash{std::string{kNewsFeatureSchemaHash}};
     [[nodiscard]] std::string to_json() const;
+    [[nodiscard]] std::string to_combined_json(std::span<const double> market_values) const;
 };
 
 [[nodiscard]] bool eligible_at_cutoff(const Article& article, std::int64_t cutoff_unix_ms);

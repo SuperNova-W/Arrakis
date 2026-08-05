@@ -1,5 +1,6 @@
 #include "arrakis/news/aggregation.hpp"
 #include "arrakis/news/finbert.hpp"
+#include "arrakis/news/market_features.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -148,6 +149,14 @@ struct ArticleRow final {
     return result;
 }
 
+[[nodiscard]] std::vector<arrakis::news::MarketDay> market_days(
+    const std::map<std::string, Bar>& series) {
+    std::vector<arrakis::news::MarketDay> output;
+    output.reserve(series.size());
+    for (const auto& [date, bar] : series) output.push_back({date, bar.close, bar.volume});
+    return output;
+}
+
 [[nodiscard]] std::vector<ArticleRow> load_news(const std::filesystem::path& path) {
     std::ifstream input{path};
     if (!input) throw std::runtime_error{"Could not open normalized news: " + path.string()};
@@ -190,7 +199,7 @@ int main(int argc, char** argv) {
         const auto market = load_market(history_dir);
         auto articles = load_news(news_path);
         std::map<std::string, std::vector<arrakis::news::EnrichedArticle>> enriched;
-        constexpr std::size_t batch_size = 16;
+        constexpr std::size_t batch_size = 64;
         for (std::size_t begin = 0; begin < articles.size(); begin += batch_size) {
             const auto end = std::min(articles.size(), begin + batch_size);
             std::vector<std::string> texts;
@@ -220,10 +229,12 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(output_path.parent_path());
         std::ofstream output{output_path};
         if (!output) throw std::runtime_error{"Could not create combined dataset"};
-        output << "date,ret_1,ret_3,ret_6,volatility_6,volume_mean_6,rel_volume,rsi_14,spy_ret_1,sector_spy_diff";
-        for (const auto& name : arrakis::news::aggregate_daily("", 0, {}).feature_names) output << ',' << name;
+        output << "date";
+        for (const auto& name : arrakis::news::combined_feature_names()) output << ',' << name;
         output << ",target_next_close_up\n";
         const auto& xlk = market.at("XLK");
+        const auto xlk_days = market_days(xlk);
+        const auto spy_days = market_days(market.at("SPY"));
         std::vector<std::string> dates;
         for (const auto& [date, unused] : xlk) {
             static_cast<void>(unused);
@@ -233,28 +244,16 @@ int main(int argc, char** argv) {
         for (std::size_t row = 6; row + 1 < dates.size(); ++row) {
             const auto& date = dates[row];
             const auto& next_date = dates[row + 1];
-            const auto current = xlk.at(date);
-            const auto prev1 = xlk.at(dates[row - 1]);
-            const auto prev3 = xlk.at(dates[row - 3]);
-            const auto prev6 = xlk.at(dates[row - 6]);
-            const auto& spy = market.at("SPY");
-            const auto spy_current = spy.at(date);
-            const auto spy_prev = spy.at(dates[row - 1]);
-            const double ret1 = current.close / prev1.close - 1.0;
-            const double ret3 = current.close / prev3.close - 1.0;
-            const double ret6 = current.close / prev6.close - 1.0;
-            double volume_sum = 0.0;
-            for (std::size_t i = row - 5; i <= row; ++i) volume_sum += xlk.at(dates[i]).volume;
-            const double volume_mean = volume_sum / 6.0;
-            const double spy_ret1 = spy_current.close / spy_prev.close - 1.0;
+            const auto market_features = arrakis::news::market_feature_vector(xlk_days, spy_days, date);
+            if (!market_features) throw std::runtime_error{"Market history is insufficient for " + date};
+            const auto current_close = xlk.at(date).close;
             const auto daily = enriched.contains(date)
                                    ? arrakis::news::aggregate_daily(date, market_close_ms(date), std::move(enriched[date]))
                                    : arrakis::news::aggregate_daily(date, market_close_ms(date), {});
-            output << date << ',' << ret1 << ',' << ret3 << ',' << ret6 << ',' << std::sqrt(std::abs(ret6)) << ','
-                   << volume_mean << ',' << current.volume / std::max(1.0, volume_mean) << ','
-                   << std::clamp(50.0 + 10.0 * ret1, 0.0, 100.0) << ',' << spy_ret1 << ',' << ret1 - spy_ret1;
+            output << date;
+            for (const auto value : *market_features) output << ',' << value;
             for (const auto value : daily.values) output << ',' << value;
-            output << ',' << (xlk.at(next_date).close > current.close ? 1 : 0) << '\n';
+            output << ',' << (xlk.at(next_date).close > current_close ? 1 : 0) << '\n';
         }
         return 0;
     } catch (const std::exception& error) {

@@ -1,5 +1,6 @@
 #include "arrakis/database/postgres.hpp"
 #include "arrakis/market_api/live_market.hpp"
+#include "arrakis/news/feature_schema.hpp"
 #include "arrakis/news/finbert.hpp"
 #include "arrakis/serialization/serialization.hpp"
 #include "arrakis/streaming/kafka.hpp"
@@ -75,8 +76,8 @@ public:
     NewsXGBoostModel& operator=(const NewsXGBoostModel&) = delete;
 
     [[nodiscard]] double predict(const std::vector<float>& features) const {
-        const auto expected = env("ARRAKIS_XLK_NEWS_FEATURE_COUNT");
-        if (!expected.empty() && features.size() != static_cast<std::size_t>(std::stoul(expected))) throw std::runtime_error("XGBoost feature vector length does not match the active model");
+        const auto expected = env("ARRAKIS_XLK_NEWS_FEATURE_COUNT", std::to_string(arrakis::news::kCombinedFeatureCount));
+        if (features.size() != static_cast<std::size_t>(std::stoul(expected))) throw std::runtime_error("XGBoost feature vector length does not match the active model");
         DMatrixHandle matrix = nullptr;
         if (XGDMatrixCreateFromMat(features.data(), 1, features.size(), std::numeric_limits<float>::quiet_NaN(), &matrix) != 0) {
             throw std::runtime_error("Unable to create XGBoost news feature matrix");
@@ -265,15 +266,17 @@ boost::json::object news_json(const arrakis::database::NewsFeatureSnapshot& snap
         warnings = boost::json::parse(snapshot.missing_source_warnings_json, error);
         if (error) warnings = boost::json::array{};
     }
-    return {{"symbol", snapshot.symbol}, {"date", snapshot.trading_date}, {"publication_cutoff", snapshot.cutoff_timestamp}, {"latest_eligible_article", snapshot.latest_eligible_article_at.empty() ? boost::json::value(nullptr) : boost::json::value(snapshot.latest_eligible_article_at)}, {"coverage_status", snapshot.coverage_status.empty() ? "empty" : snapshot.coverage_status}, {"feature_schema_hash", snapshot.feature_schema_hash}, {"features", features}, {"missing_source_warnings", warnings}, {"articles", articles}, {"affected_companies", boost::json::array{}}, {"estimated_news_contribution", nullptr}, {"model_versions", {{"finbert", "finbert-v1"}, {"tokenizer", "finbert-tokenizer-v1"}, {"aggregation", "xlk-news-features-v1"}, {"xgboost", "xlk-finbert-xgboost-v1"}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
+    return {{"symbol", snapshot.symbol}, {"date", snapshot.trading_date}, {"publication_cutoff", snapshot.cutoff_timestamp}, {"latest_eligible_article", snapshot.latest_eligible_article_at.empty() ? boost::json::value(nullptr) : boost::json::value(snapshot.latest_eligible_article_at)}, {"coverage_status", snapshot.coverage_status.empty() ? "empty" : snapshot.coverage_status}, {"feature_schema_hash", snapshot.feature_schema_hash}, {"features", features}, {"missing_source_warnings", warnings}, {"articles", articles}, {"affected_companies", boost::json::array{}}, {"estimated_news_contribution", nullptr}, {"model_versions", {{"finbert", "finbert-v1"}, {"tokenizer", "finbert-tokenizer-v1"}, {"aggregation", "xlk-combined-features-v1"}, {"xgboost", "xlk-finbert-xgboost-v1"}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
 }
 
 std::vector<float> news_feature_vector(const arrakis::database::NewsFeatureSnapshot& snapshot) {
     boost::system::error_code error;
     const auto parsed = boost::json::parse(snapshot.features_json, error);
     if (error || !parsed.is_object()) throw std::runtime_error("daily news features are missing or malformed");
+    const auto* schema = parsed.as_object().if_contains("schema");
+    if (schema == nullptr || !schema->is_string() || schema->as_string() != env("ARRAKIS_FEATURE_SCHEMA_HASH", std::string{arrakis::news::kCombinedFeatureSchemaHash})) throw std::runtime_error("daily news feature vector schema is missing or stale");
     const auto* values = parsed.as_object().if_contains("values");
-    if (values == nullptr || !values->is_array() || values->as_array().empty()) throw std::runtime_error("daily news feature vector is missing");
+    if (values == nullptr || !values->is_array() || values->as_array().size() != arrakis::news::kCombinedFeatureCount) throw std::runtime_error("daily news feature vector is missing or has the wrong length");
     std::vector<float> result;
     result.reserve(values->as_array().size());
     for (const auto& value : values->as_array()) {
@@ -328,13 +331,19 @@ boost::json::value route(
             return error_json("ML_DATABASE_UNAVAILABLE", "The ML feature database is unavailable; live market data is unaffected.");
         }
         const auto snapshot = database->news_snapshot("XLK", date);
-        if (!snapshot.feature_schema_hash.empty() && snapshot.feature_schema_hash != env("ARRAKIS_FEATURE_SCHEMA_HASH", "xlk-news-features-v1")) { status = 409; return error_json("FEATURE_SCHEMA_MISMATCH", "Stored news features do not match the active model schema."); }
+        if (!snapshot.feature_schema_hash.empty() && snapshot.feature_schema_hash != env("ARRAKIS_FEATURE_SCHEMA_HASH", std::string{arrakis::news::kCombinedFeatureSchemaHash})) { status = 409; return error_json("FEATURE_SCHEMA_MISMATCH", "Stored news features do not match the active model schema."); }
         if (path[4] == "news" || path[4] == "nlp-features") return news_json(snapshot);
         if (model == nullptr || finbert == nullptr || !finbert->ready()) {
             status = 503;
             return error_json("MODEL_UNAVAILABLE", "The versioned FinBERT ONNX and XGBoost XLK artifacts are not available.");
         }
-        const auto features = news_feature_vector(snapshot);
+        std::vector<float> features;
+        try {
+            features = news_feature_vector(snapshot);
+        } catch (const std::exception& error) {
+            status = 409;
+            return error_json("FEATURE_SCHEMA_MISMATCH", error.what());
+        }
         const auto probability = model->predict(features);
         const auto signal = probability >= 0.5 ? "Bullish" : "Bearish";
         status = 200;

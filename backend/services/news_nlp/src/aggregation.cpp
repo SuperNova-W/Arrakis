@@ -8,13 +8,12 @@
 
 namespace arrakis::news {
 namespace {
-const std::vector<std::string> names{
-    "article_count", "positive_proportion", "neutral_proportion", "negative_proportion", "average_sentiment",
-    "max_positive_sentiment", "max_negative_sentiment", "sentiment_stddev", "time_decayed_sentiment",
-    "entity_weighted_sentiment", "holding_sentiment", "abnormal_news_volume", "article_novelty",
-    "source_weighted_sentiment", "cross_article_disagreement", "sector_breadth", "macro_news_count",
-    "news_coverage", "news_freshness_hours", "embedding_0", "embedding_1", "embedding_2", "embedding_3",
-    "embedding_4", "embedding_5", "embedding_6", "embedding_7"};
+const std::vector<std::string> names = [] {
+    std::vector<std::string> output;
+    output.reserve(kNewsFeatureCount);
+    for (const auto name : kNewsFeatureNames) output.emplace_back(name);
+    return output;
+}();
 
 double mean(const std::vector<double>& values) { return values.empty() ? 0.0 : std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size()); }
 }
@@ -47,9 +46,20 @@ DailyNewsFeatures aggregate_daily(std::string trading_date, std::int64_t cutoff_
 }
 
 std::string DailyNewsFeatures::to_json() const {
-    boost::json::array values_json; for (const auto value : values) values_json.push_back(value);
+    boost::json::array values_json;
+    for (const auto value : values) values_json.push_back(value);
     boost::json::object result{{"schema", feature_schema_hash}, {"values", values_json}};
     for (std::size_t index = 0; index < feature_names.size() && index < values.size(); ++index) result[feature_names[index]] = values[index];
+    return boost::json::serialize(result);
+}
+
+std::string DailyNewsFeatures::to_combined_json(std::span<const double> market_values) const {
+    const auto combined = combine_feature_values(market_values, values);
+    boost::json::array values_json;
+    for (const auto value : combined) values_json.push_back(value);
+    const auto combined_names = combined_feature_names();
+    boost::json::object result{{"schema", kCombinedFeatureSchemaHash}, {"values", values_json}};
+    for (std::size_t index = 0; index < combined_names.size(); ++index) result[combined_names[index]] = combined[index];
     return boost::json::serialize(result);
 }
 }  // namespace arrakis::news

@@ -53,6 +53,12 @@ struct NewsFeatureSnapshot final {
     std::vector<NewsArticle> articles;
 };
 
+struct DailyMarketBar final {
+    std::string trading_date;
+    double close{};
+    double volume{};
+};
+
 class PostgresPool final {
 public:
     explicit PostgresPool(DatabaseConfig config);
@@ -73,6 +79,8 @@ public:
         std::optional<std::chrono::sys_time<std::chrono::milliseconds>> from,
         std::optional<std::chrono::sys_time<std::chrono::milliseconds>> to,
         std::size_t limit) const;
+    [[nodiscard]] std::vector<DailyMarketBar> daily_market_bars(
+        std::string_view symbol, std::int64_t cutoff_unix_ms, std::size_t lookback_days = 45) const;
     void persist_news_article(const NewsArticle& article, std::string_view normalized_content_hash,
                               std::string_view provenance_json);
     void persist_news_entities(std::string_view article_id, const std::vector<std::string>& entities);

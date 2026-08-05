@@ -1,7 +1,8 @@
 {
-  "version": "xlk-news-features-v1",
+  "version": "xlk-combined-features-v1",
   "symbol": "XLK",
   "features": [
+    "ret_1", "ret_3", "ret_6", "volatility_6", "volume_mean_6", "rel_volume", "rsi_14", "spy_ret_1", "sector_spy_diff",
     "article_count", "positive_proportion", "neutral_proportion", "negative_proportion",
     "average_sentiment", "max_positive_sentiment", "max_negative_sentiment",
     "sentiment_stddev", "time_decayed_sentiment", "entity_weighted_sentiment",

@@ -202,6 +202,38 @@ std::vector<bar_aggregator::MarketBar> PostgresPool::bars(std::string_view symbo
     return output;
 }
 
+std::vector<DailyMarketBar> PostgresPool::daily_market_bars(
+    std::string_view symbol, std::int64_t cutoff_unix_ms, std::size_t lookback_days) const {
+    const auto lease = impl_->acquire();
+    const std::string symbol_value(symbol);
+    const std::string cutoff = std::to_string(cutoff_unix_ms);
+    const std::string lookback = std::to_string(lookback_days);
+    const char* values[] = {symbol_value.c_str(), cutoff.c_str(), lookback.c_str()};
+    constexpr std::string_view query =
+        "WITH source_bars AS ("
+        " SELECT (bar_end AT TIME ZONE 'America/New_York')::date::text AS trading_date,"
+        "        bar_end, close, volume"
+        " FROM etf_bars_5m"
+        " WHERE symbol=$1"
+        "   AND bar_end <= to_timestamp($2::double precision/1000.0)"
+        "   AND bar_end >= to_timestamp($2::double precision/1000.0) - ($3::integer * interval '1 day')"
+        "), daily AS ("
+        " SELECT trading_date,"
+        "        (array_agg(close ORDER BY bar_end DESC))[1] AS close,"
+        "        SUM(volume) AS volume"
+        " FROM source_bars GROUP BY trading_date"
+        ") SELECT trading_date, close, volume FROM daily ORDER BY trading_date";
+    Result result(PQexecParams(lease.connection, query.data(), 3, nullptr, values, nullptr, nullptr, 0));
+    require_result(result.get(), PGRES_TUPLES_OK);
+    std::vector<DailyMarketBar> output;
+    output.reserve(static_cast<std::size_t>(PQntuples(result.get())));
+    for (int row = 0; row < PQntuples(result.get()); ++row) {
+        output.push_back({PQgetvalue(result.get(), row, 0), std::stod(PQgetvalue(result.get(), row, 1)),
+                          std::stod(PQgetvalue(result.get(), row, 2))});
+    }
+    return output;
+}
+
 void PostgresPool::persist_news_article(const NewsArticle& article, std::string_view normalized_content_hash,
                                         std::string_view provenance_json) {
     const auto lease = impl_->acquire();
