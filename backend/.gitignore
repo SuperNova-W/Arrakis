@@ -6,7 +6,9 @@
 /data/fnspid/manifests/
 /models/*
 !/models/finbert/
+/models/finbert/*
 !/models/finbert/README.md
+!/models/finbert/manifest.json
 *.dylib
 *.so
 

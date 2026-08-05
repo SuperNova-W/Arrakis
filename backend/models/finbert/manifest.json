@@ -1,0 +1,14 @@
+{
+  "artifact_id": "arrakis-finbert-v1",
+  "license": "Apache-2.0 (ProsusAI FinBERT derivative; verify the source license before redistribution)",
+  "model_filename": "model.onnx",
+  "vocabulary_filename": "vocab.txt",
+  "model_sha256": "4a8d58ba2f8d74c7fca30fdb49fbbe367b64760104b64e8623e896a007229a6e",
+  "vocabulary_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+  "model_contract": {
+    "inputs": ["input_ids", "attention_mask", "token_type_ids (optional)"],
+    "logits_output_order": ["positive", "negative", "neutral"],
+    "pooled_embedding_output": "[batch, embedding_dimensions]"
+  },
+  "distribution": "The exact Arrakis export is fetched from an operator-controlled HTTPS or S3-compatible URL; see scripts/fetch_finbert_model.sh."
+}
