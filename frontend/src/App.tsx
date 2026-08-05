@@ -3,7 +3,6 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
-  CheckCircle2,
   ChevronRight,
   Database,
   Download,
@@ -28,6 +27,7 @@ import type { ConnectionStatus, LiveTrade } from './liveMarket/types'
 import { TwelveDataError } from './twelveData/client'
 import { useTwelveDataCandles } from './twelveData/hooks'
 import { twelveDataRangeRequest } from './twelveData/ranges'
+import { MlApiError, useMlRecommendation } from './mlApi'
 
 const TWELVE_DATA_API_KEY = (import.meta.env.VITE_TWELVE_DATA_API_KEY ?? '').trim()
 
@@ -368,7 +368,51 @@ function StatusCard({ label, value, good }: { label: string; value: string; good
 }
 
 function Recommendation() {
-  return <><Topbar eyebrow="RESEARCH / MODEL INSIGHTS" title="Recommendations"/><div className="panel recommendation-page"><CheckCircle2 size={28}/><div><div className="eyebrow">SEPARATE ML BOUNDARY</div><h2>Market charts and the inference pipeline use separate data paths</h2><p>The recommendation engine remains a separate research system. This page intentionally does not infer a recommendation from chart indicators or call database-backed market-data endpoints.</p><div className="recommendation-contract"><span>Market display source</span><code>Twelve Data REST history + Finnhub quote</code><span>Backend inference feed</span><code>Arrakis market-api WebSocket (Finnhub via Kafka), independent of the chart</code><span>Recommendation source</span><code>Not connected in this frontend market view</code></div></div></div></>
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const ml = useMlRecommendation(date)
+  const prediction = ml.prediction.data?.prediction
+  const news = ml.news.data ?? ml.insights.data
+  const error = ml.prediction.error ?? ml.news.error ?? ml.insights.error
+
+  return <>
+    <Topbar eyebrow="RESEARCH / MODEL INSIGHTS" title="Recommendations">
+      <label className="date-control"><span>Prediction date</span><input type="date" value={date} onChange={event => setDate(event.target.value)}/></label>
+      <button className="outline-btn" onClick={ml.refresh}>Refresh</button>
+    </Topbar>
+    <div className="notice-banner live-source"><Database size={17}/><div><b>Arrakis market-api research boundary</b><span>Prediction, news, and NLP insight data come from the date-scoped backend endpoints. The live chart remains on its separate Twelve Data and Finnhub path.</span></div><span className="chart-source">ML API</span></div>
+    {ml.loading ? <div className="panel recommendation-page"><div className="chart-placeholder large"/></div> : error && !prediction && !news ? <MlErrorState error={error} retry={ml.refresh}/> : <section className="recommendation-layout">
+      <div className="panel insight-panel">
+        <div className="panel-head"><div><div className="eyebrow">XLK · {date}</div><h2>Model recommendation</h2></div>{prediction && <span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span>}</div>
+        {prediction ? <>
+          <div className="insight-primary"><strong>{(prediction.probability_positive_return * 100).toFixed(1)}%</strong><span>probability of next close up</span></div>
+          <div className="confidence-track"><i style={{ width: `${Math.max(0, Math.min(100, prediction.probability_positive_return * 100))}%` }}/></div>
+          <div className="insight-grid"><div><span>Signal direction</span><b>{prediction.direction}</b></div><div><span>Decision threshold</span><b>{(prediction.threshold * 100).toFixed(0)}%</b></div><div><span>Model</span><b>{prediction.model_id}</b></div><div><span>Feature coverage</span><b>{news?.coverage_status ?? '—'}</b></div></div>
+        </> : <div className="empty-state"><AlertTriangle size={18}/><div><h2>Prediction unavailable</h2><p>{ml.prediction.error?.message ?? 'No prediction was returned for this date.'}</p></div></div>}
+        {ml.prediction.error && <div className="inline-warning"><AlertTriangle size={14}/>{formatMlError(ml.prediction.error)}</div>}
+      </div>
+      <div className="panel news-panel">
+        <div className="panel-head"><div><div className="eyebrow">POINT-IN-TIME NEWS</div><h2>Supporting articles</h2></div><span>{news?.articles.length ?? 0} returned</span></div>
+        {news?.articles.length ? <div className="news-list">{news.articles.slice(0, 8).map(article => <article className="news-item" key={article.article_id}><div><b>{article.headline}</b><small>{article.source} · {new Date(article.published_at).toLocaleString()}</small></div><span className={article.sentiment_score >= 0 ? 'positive' : 'negative'}>{article.sentiment_score >= 0 ? 'Positive' : 'Negative'}</span></article>)}</div> : ml.news.error ? <MlErrorState error={ml.news.error} compact retry={ml.refresh}/> : <div className="empty-state"><AlertTriangle size={18}/><div><h2>No eligible news</h2><p>The backend returned no articles at this publication cutoff.</p></div></div>}
+        {news?.dominant_themes?.length ? <div className="recommendation-contract"><span>Dominant themes</span><code>{news.dominant_themes.join(' · ')}</code></div> : null}
+      </div>
+      <div className="panel research-only-note"><ShieldCheck size={18}/><div><b>Research-only recommendation</b><p>{news?.research_only_disclaimer ?? 'Research signals only. Not investment advice. No trades are executed by this platform.'}</p></div></div>
+    </section>}
+  </>
+}
+
+function formatMlError(error: MlApiError) {
+  switch (error.code) {
+    case 'MODEL_UNAVAILABLE': return 'The versioned FinBERT/XGBoost artifacts are unavailable; no fallback prediction is shown.'
+    case 'FEATURE_SCHEMA_MISMATCH': return 'Stored features do not match the active 36-feature model schema; prediction is blocked.'
+    case 'ML_DATABASE_UNAVAILABLE': return 'The ML feature database is unavailable; live market display is unaffected.'
+    case 'FEATURES_UNAVAILABLE': return 'The date has no complete market-plus-news feature vector yet.'
+    default: return error.message
+  }
+}
+
+function MlErrorState({ error, retry, compact = false }: { error: MlApiError; retry?: () => void; compact?: boolean }) {
+  const title = error.code === 'MODEL_UNAVAILABLE' ? 'Model artifact unavailable' : error.code === 'FEATURE_SCHEMA_MISMATCH' ? 'Feature schema mismatch' : error.code === 'ML_DATABASE_UNAVAILABLE' ? 'ML database unavailable' : error.code === 'INVALID_DATE' ? 'Invalid prediction date' : 'Research API unavailable'
+  return <div className={`panel empty-state finnhub-error ${compact ? 'compact' : ''}`}><WifiOff size={20}/><div><h2>{title}</h2><p>{formatMlError(error)}</p><small className="mono">{error.code}{error.status ? ` · HTTP ${error.status}` : ''}</small>{retry && <button className="outline-btn" onClick={retry}><RefreshCw size={14}/> Retry</button>}</div></div>
 }
 
 function RouterView({ apiKey }: { apiKey: string }) {
