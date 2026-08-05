@@ -233,5 +233,7 @@ if(BUILD_TESTING AND ARRAKIS_BUILD_XGBOOST_TRAINER)
         target_compile_features(arrakis_finbert_smoke_test PRIVATE cxx_std_20)
         target_link_libraries(arrakis_finbert_smoke_test PRIVATE arrakis_news_nlp_core GTest::gtest_main)
         add_test(NAME arrakis_finbert_smoke_test COMMAND arrakis_finbert_smoke_test)
+        add_test(NAME arrakis_news_inference_integration
+            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/news_inference_integration.sh)
     endif()
 endif()
