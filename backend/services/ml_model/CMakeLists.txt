@@ -11,7 +11,7 @@ target_compile_features(arrakis_model_core PUBLIC cxx_std_20)
 target_include_directories(arrakis_model_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 if(ARRAKIS_BUILD_XGBOOST_TRAINER)
-    target_link_libraries(arrakis_model_core PUBLIC xgboost::xgboost)
+    target_link_libraries(arrakis_model_core PUBLIC xgboost::xgboost OpenSSL::Crypto)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
