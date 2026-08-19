@@ -173,9 +173,13 @@ jobs:
       - name: Install ONNX Runtime
         if: steps.window.outputs.skip != 'true'
         # onnxruntime has no Debian package. services/news_nlp/CMakeLists.txt
-        # falls back to find_path/find_library under /usr/local. Without this,
-        # ARRAKIS_HAS_ONNXRUNTIME is undefined and FinbertSession's constructor
-        # THROWS -- no inference is possible at all.
+        # tries find_package(onnxruntime CONFIG) first, and the release tarball
+        # does ship lib/cmake/onnxruntime/*.cmake, so that succeeds -- but the
+        # packaged onnxruntimeTargets.cmake hardcodes the library under lib64,
+        # which doesn't exist on Debian's lib layout. Symlink it so the
+        # imported target resolves. Without this, ARRAKIS_HAS_ONNXRUNTIME is
+        # undefined and FinbertSession's constructor THROWS -- no inference is
+        # possible at all.
         run: |
           set -euo pipefail
           ver="${ONNXRUNTIME_VERSION}"
@@ -184,6 +188,7 @@ jobs:
           mkdir -p /tmp/ort && tar -xzf /tmp/ort.tgz -C /tmp/ort --strip-components=1
           cp -r /tmp/ort/include/* /usr/local/include/
           cp -r /tmp/ort/lib/*      /usr/local/lib/
+          [ -e /usr/local/lib64 ] || ln -s /usr/local/lib /usr/local/lib64
           ldconfig
           test -f /usr/local/include/onnxruntime_cxx_api.h
 
