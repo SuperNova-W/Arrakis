@@ -249,4 +249,42 @@ DatasetThreeWaySplit chronological_split_by_dates(
     };
 }
 
+Dataset date_slice(const Dataset& dataset, const std::string& begin, const std::string& end) {
+    if (begin.empty() || end.empty() || begin > end) {
+        throw std::invalid_argument{"Date-slice boundaries must be non-empty and ordered"};
+    }
+    if (dataset.row_count() == 0 || dataset.feature_count() == 0 ||
+        dataset.features.size() != dataset.row_count() * dataset.feature_count() ||
+        dataset.dates.size() != dataset.row_count()) {
+        throw std::invalid_argument{"Dataset dimensions are inconsistent for date slice"};
+    }
+
+    const auto begin_it = std::ranges::lower_bound(dataset.dates, begin);
+    const auto end_it = std::ranges::upper_bound(dataset.dates, end);
+    const auto begin_index = static_cast<std::size_t>(
+        std::distance(dataset.dates.begin(), begin_it)
+    );
+    const auto end_index = static_cast<std::size_t>(
+        std::distance(dataset.dates.begin(), end_it)
+    );
+    if (begin_index == end_index) {
+        throw std::invalid_argument{
+            "Requested date slice contains no rows: " + begin + " through " + end
+        };
+    }
+    return slice_rows(dataset, begin_index, end_index);
+}
+
+Dataset row_slice(const Dataset& dataset, const std::size_t begin, const std::size_t end) {
+    if (begin > end || end > dataset.row_count() ||
+        dataset.features.size() != dataset.row_count() * dataset.feature_count() ||
+        dataset.dates.size() != dataset.row_count()) {
+        throw std::invalid_argument{"Invalid row slice or inconsistent dataset dimensions"};
+    }
+    if (begin == end) {
+        throw std::invalid_argument{"Row slice must contain at least one row"};
+    }
+    return slice_rows(dataset, begin, end);
+}
+
 }  // namespace arrakis::model

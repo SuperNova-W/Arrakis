@@ -1,0 +1,436 @@
+name: Hourly XLK signal
+
+# Zero-cost production deployment.
+#
+# GitHub Actions is the compute layer. SuperNova-W/Arrakis is PUBLIC, so standard
+# runners are free and unlimited, and this workflow costs $0.00/month.
+#
+# Each run stands up the real pipeline (ephemeral Kafka + FinBERT ONNX + the
+# market-api inference route) against a DURABLE Supabase PostgreSQL, produces one
+# XLK research document, and upserts it into research_signals. The browser reads
+# that back through the public_research_signal_latest view with the anon key.
+# There is no always-on server anywhere in the system.
+#
+# Supabase must be the pipeline's database, not an ephemeral container: the news
+# corpus, daily bars and feature history have to accumulate across runs. It also
+# means the hourly writes keep the free project from pausing after 7 days idle.
+#
+# What this gives up, deliberately:
+#   * No live market WebSocket. The ML path uses daily bars, which is what the
+#     model trains on anyway.
+#   * Kafka runs per-job rather than continuously.
+# See backend/docs/zero-cost-deployment.md.
+
+on:
+  schedule:
+    # Hourly at :10 past, 13:00-21:00 UTC Mon-Fri. That spans the regular session
+    # in both DST regimes (09:30-16:00 ET is 13:30-20:00 UTC in EDT, 14:30-21:00
+    # UTC in EST) and includes one post-close run in each. The job itself decides
+    # whether the market is open and which run is the signal of record; a run
+    # outside the session exits cleanly.
+    #
+    # GitHub does not guarantee punctuality: scheduled workflows are commonly
+    # delayed 5-30 minutes and can be dropped entirely under load. This pipeline
+    # tolerates that -- a missed hour simply means the next run covers a wider
+    # news window.
+    - cron: '10 13-21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      trading_date:
+        description: 'Trading date to build (YYYY-MM-DD). Defaults to today in America/New_York.'
+        required: false
+        type: string
+      force_post_close:
+        description: 'Treat this run as the post-close signal of record.'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: hourly-signal
+  cancel-in-progress: false
+
+env:
+  ONNXRUNTIME_VERSION: '1.28.0'
+  # Must match the Homebrew onnxruntime version used on the development machine
+  # so FinBERT numerics are identical between local and deployed runs.
+
+jobs:
+  signal:
+    name: Publish XLK research document
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    # debian:bookworm deliberately: backend/Dockerfile proves this apt set
+    # resolves on bookworm, including libxgboost-dev, which is NOT reliably
+    # available in Ubuntu's repositories.
+    container:
+      image: debian:bookworm
+
+    services:
+      # Kafka stays ephemeral. Each run republishes the lookback window, so a
+      # fresh broker per job loses nothing; the durable record is in Supabase.
+      kafka:
+        image: bitnamilegacy/kafka:3.8
+        env:
+          KAFKA_CFG_NODE_ID: 1
+          KAFKA_CFG_PROCESS_ROLES: controller,broker
+          KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+          KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: 'true'
+          ALLOW_PLAINTEXT_LISTENER: 'yes'
+
+    env:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Supabase is the durable store. SUPABASE_DB_URL is the pooled connection
+      # string (Settings -> Database -> Connection string -> URI).
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      POSTGRES_SSLMODE: require
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      # The gate stays CLOSED. No target has cleared the documented walk-forward
+      # bar, and AGENTS.md forbids presenting a prediction without that evidence.
+      # Flip this to 'true' only when a target clears it.
+      ARRAKIS_XLK_NEWS_MODEL_VALIDATED: 'false'
+      ARRAKIS_FINBERT_VERSION: finbert-v1
+      ARRAKIS_FINBERT_TOKENIZER_VERSION: finbert-tokenizer-v1
+      ARRAKIS_FINBERT_MAX_TOKENS: '128'
+
+    steps:
+      - name: Install toolchain and runtime dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config ccache git curl ca-certificates jq tzdata \
+            libboost-json1.81-dev libssl-dev libprotobuf-dev protobuf-compiler \
+            libabsl-dev librdkafka-dev libpq-dev libxgboost-dev \
+            postgresql-client
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v4
+
+      - name: Decide whether this run should proceed
+        id: window
+        run: |
+          set -euo pipefail
+          requested="${{ inputs.trading_date }}"
+          now_et_date=$(TZ=America/New_York date +%Y-%m-%d)
+          now_et_hm=$(TZ=America/New_York date +%H%M)
+          dow=$(TZ=America/New_York date +%u)
+          signal_date="${requested:-$now_et_date}"
+
+          if [ -z "$requested" ] && [ "$dow" -gt 5 ]; then
+            echo "::notice::Weekend in New York; nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Regular session is 09:30-16:00 ET. Before the open there is no bar
+          # and no meaningful intraday window.
+          if [ -z "$requested" ] && [ "$now_et_hm" -lt 0930 ]; then
+            echo "::notice::Before the open in New York (${now_et_hm} ET); nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # The post-close run is the signal of record: its news window matches
+          # the full trading day the model was trained on. Intraday runs are
+          # point-in-time correct but out-of-distribution.
+          if [ "${{ inputs.force_post_close }}" = "true" ] || [ "$now_et_hm" -ge 1600 ]; then
+            run_kind=post_close
+            cutoff_epoch=$(TZ=America/New_York date -d "$signal_date 16:00:00" +%s)
+          else
+            run_kind=intraday
+            cutoff_epoch=$(date +%s)
+          fi
+
+          # Inclusive lower bound: midnight ET on the trading date. This matches
+          # the batch dataset builder, which groups training articles by their
+          # own calendar date. Without it the aggregate would span the whole
+          # NEWS_POLL_LOOKBACK_DAYS republication window.
+          window_start_epoch=$(TZ=America/New_York date -d "$signal_date 00:00:00" +%s)
+
+          {
+            echo "skip=false"
+            echo "date=$signal_date"
+            echo "run_kind=$run_kind"
+            echo "cutoff_ms=$((cutoff_epoch * 1000))"
+            echo "cutoff_iso=$(date -u -d "@$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+            echo "window_start_ms=$((window_start_epoch * 1000))"
+            echo "window_start_iso=$(date -u -d "@$window_start_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "$signal_date / $run_kind / cutoff $(date -u -d "@$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Install ONNX Runtime
+        if: steps.window.outputs.skip != 'true'
+        # onnxruntime has no Debian package. services/news_nlp/CMakeLists.txt
+        # falls back to find_path/find_library under /usr/local. Without this,
+        # ARRAKIS_HAS_ONNXRUNTIME is undefined and FinbertSession's constructor
+        # THROWS -- no inference is possible at all.
+        run: |
+          set -euo pipefail
+          ver="${ONNXRUNTIME_VERSION}"
+          url="https://github.com/microsoft/onnxruntime/releases/download/v${ver}/onnxruntime-linux-x64-${ver}.tgz"
+          curl -fsSL "$url" -o /tmp/ort.tgz
+          mkdir -p /tmp/ort && tar -xzf /tmp/ort.tgz -C /tmp/ort --strip-components=1
+          cp -r /tmp/ort/include/* /usr/local/include/
+          cp -r /tmp/ort/lib/*      /usr/local/lib/
+          ldconfig
+          test -f /usr/local/include/onnxruntime_cxx_api.h
+
+      - name: Cache C++ build
+        if: steps.window.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/build/ci
+            ~/.ccache
+          key: signal-build-${{ runner.os }}-${{ hashFiles('backend/CMakeLists.txt', 'backend/services/**/CMakeLists.txt', 'backend/**/*.cpp', 'backend/**/*.hpp') }}
+          restore-keys: |
+            signal-build-${{ runner.os }}-
+
+      - name: Cache model artifacts
+        if: steps.window.outputs.skip != 'true'
+        # The FinBERT ONNX file is 605.6 MiB. At an hourly cadence, re-downloading
+        # it every run is the single largest avoidable cost in wall-clock terms.
+        # Keyed on the digests pinned in manifest.json, so a model change busts
+        # the cache automatically.
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/models/finbert/model.onnx
+            backend/models/finbert/vocab.txt
+          key: finbert-${{ hashFiles('backend/models/finbert/manifest.json') }}
+
+      - name: Build pipeline binaries
+        if: steps.window.outputs.skip != 'true'
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          export CCACHE_DIR="$HOME/.ccache"
+          cmake -S . -B build/ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DARRAKIS_BUILD_XGBOOST_TRAINER=OFF \
+            -DARRAKIS_BUILD_MARKET_API=ON \
+            -DARRAKIS_BUILD_ML_RUNTIME=OFF \
+            -DBUILD_TESTING=OFF \
+            -DPostgreSQL_ROOT=/usr
+          cmake --build build/ci --parallel \
+            --target daily-bar-loader news-ingestion news-enricher market-api fetch-historical-data
+          ccache --show-stats || true
+
+      - name: Verify FinBERT support compiled in
+        if: steps.window.outputs.skip != 'true'
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          ldd build/ci/news-enricher | grep -qi onnxruntime || {
+            echo "::error::news-enricher is not linked against onnxruntime; FinBERT would throw at startup." >&2
+            exit 1
+          }
+
+      - name: Download model artifacts
+        if: steps.window.outputs.skip != 'true'
+        working-directory: backend
+        # Neither artifact is in git: backend/.gitignore excludes
+        # models/finbert/* and the whole of /artifacts/. Both are published once
+        # to a GitHub Release. Release assets on a public repo are free and
+        # unauthenticated. The cache above usually makes this a no-op.
+        env:
+          MODELS_RELEASE_TAG: ${{ vars.MODELS_RELEASE_TAG || 'models-v1' }}
+        run: |
+          set -euo pipefail
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${MODELS_RELEASE_TAG}"
+          mkdir -p models/finbert artifacts
+          [ -f models/finbert/model.onnx ] || curl -fsSL "$base/model.onnx" -o models/finbert/model.onnx
+          [ -f models/finbert/vocab.txt  ] || curl -fsSL "$base/vocab.txt"  -o models/finbert/vocab.txt
+          curl -fsSL "$base/xlk_news_xgboost.json" -o artifacts/xlk_news_xgboost.json || \
+            echo "::warning::XGBoost artifact missing from release; prediction stays gated (expected while unvalidated)."
+          # Integrity: verify against the digests pinned in manifest.json,
+          # whether the files came from the cache or the release.
+          expected_model=$(jq -r '.model_sha256'      models/finbert/manifest.json)
+          expected_vocab=$(jq -r '.vocabulary_sha256' models/finbert/manifest.json)
+          actual_model=$(sha256sum models/finbert/model.onnx | cut -d' ' -f1)
+          actual_vocab=$(sha256sum models/finbert/vocab.txt  | cut -d' ' -f1)
+          [ "$expected_model" = "$actual_model" ] || { echo "::error::FinBERT model.onnx sha256 mismatch." >&2; exit 1; }
+          [ "$expected_vocab" = "$actual_vocab" ] || { echo "::error::FinBERT vocab.txt sha256 mismatch." >&2; exit 1; }
+          echo "Model artifacts verified against manifest.json."
+
+      - name: Refresh daily market history
+        if: steps.window.outputs.skip != 'true'
+        working-directory: backend
+        continue-on-error: true
+        run: ./build/ci/fetch-historical-data || echo "::warning::History refresh failed; falling back to committed CSVs."
+
+      - name: Seed daily bars into Supabase
+        if: steps.window.outputs.skip != 'true'
+        working-directory: backend
+        # Idempotent upsert (ON CONFLICT DO UPDATE), so running this hourly is
+        # safe and keeps the current session's bar fresh.
+        run: ./build/ci/daily-bar-loader data/history
+
+      - name: Verify the trading date has a market bar
+        id: guard
+        if: steps.window.outputs.skip != 'true'
+        working-directory: backend
+        # US market holidays have no bar, and market_feature_vector throws when
+        # the requested date is absent. Detect it and exit cleanly.
+        run: |
+          set -euo pipefail
+          count=$(psql "$SUPABASE_DB_URL" -tAc \
+            "SELECT count(*) FROM etf_bars_daily WHERE symbol='XLK' AND trading_date='${{ steps.window.outputs.date }}'")
+          if [ "$count" = "0" ]; then
+            echo "::notice::No XLK bar for ${{ steps.window.outputs.date }} (market holiday or stale history). Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ingest constituent news
+        if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        working-directory: backend
+        # --finnhub-poll runs one full constituent pass immediately, then sleeps.
+        # We want only the first pass, so we stop it once poll_complete is
+        # logged. Pacing is ~1.5s per ticker across ~55 tickers, so a pass takes
+        # roughly 90s. A --finnhub-once mode would make this a batch job by
+        # design rather than by orchestration; see the deployment doc.
+        env:
+          NEWS_POLL_LOOKBACK_DAYS: '3'
+          NEWS_POLL_INTERVAL_SECONDS: '900'
+          XLK_HOLDINGS_HISTORY: ${{ github.workspace }}/backend/data/metadata/xlk_holdings_history.csv
+        run: |
+          set -uo pipefail
+          timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-poll XLK 2>&1 | tee /tmp/ingest.log &
+          pid=$!
+          for _ in $(seq 1 120); do
+            grep -q '"event":"poll_complete"' /tmp/ingest.log && break
+            sleep 5
+          done
+          kill -INT "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          grep -q '"event":"poll_complete"' /tmp/ingest.log || {
+            echo "::error::news-ingestion never completed a poll pass." >&2; exit 1; }
+
+      - name: Enrich with FinBERT and build daily features
+        if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        working-directory: backend
+        # news-enricher is a for(;;) daemon that writes etf_daily_news_features
+        # after each article, so we run it under timeout and then assert the row
+        # exists. NEWS_PREDICTION_WINDOW_START_UNIX_MS bounds the aggregate to
+        # this trading day, matching the batch builder's per-day grouping.
+        env:
+          ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model.onnx
+          ARRAKIS_FINBERT_VOCAB_PATH: ${{ github.workspace }}/backend/models/finbert/vocab.txt
+          NEWS_TRADING_DATE: ${{ steps.window.outputs.date }}
+          NEWS_PREDICTION_CUTOFF_UNIX_MS: ${{ steps.window.outputs.cutoff_ms }}
+          NEWS_PREDICTION_CUTOFF_ISO: ${{ steps.window.outputs.cutoff_iso }}
+          NEWS_PREDICTION_WINDOW_START_UNIX_MS: ${{ steps.window.outputs.window_start_ms }}
+        run: |
+          set -uo pipefail
+          timeout --signal=INT 900 ./build/ci/news-enricher 2>&1 | tee /tmp/enrich.log || true
+          count=$(psql "$SUPABASE_DB_URL" -tAc \
+            "SELECT count(*) FROM etf_daily_news_features WHERE symbol='XLK' AND trading_date='${{ steps.window.outputs.date }}'")
+          if [ "$count" = "0" ]; then
+            echo "::error::news-enricher produced no feature row for ${{ steps.window.outputs.date }}." >&2
+            tail -50 /tmp/enrich.log >&2
+            exit 1
+          fi
+
+      - name: Export and publish the research document
+        if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        working-directory: backend
+        env:
+          ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model.onnx
+          ARRAKIS_FINBERT_VOCAB_PATH: ${{ github.workspace }}/backend/models/finbert/vocab.txt
+          ARRAKIS_XLK_NEWS_MODEL_PATH: ${{ github.workspace }}/backend/artifacts/xlk_news_xgboost.json
+          ARRAKIS_ETF_UNIVERSE: ${{ github.workspace }}/backend/config/etf_universe.json
+          MARKET_API_PORT: '8080'
+        run: |
+          set -euo pipefail
+          ./build/ci/market-api & api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health
+          ARRAKIS_SIGNAL_DATE="${{ steps.window.outputs.date }}" \
+          ARRAKIS_SIGNAL_OUT_DIR=/tmp/signals \
+          ARRAKIS_SIGNAL_RUN_KIND="${{ steps.window.outputs.run_kind }}" \
+          ARRAKIS_SIGNAL_WINDOW_START_ISO="${{ steps.window.outputs.window_start_iso }}" \
+          ARRAKIS_MARKET_API_URL="http://127.0.0.1:8080" \
+            ./scripts/export_daily_signal.sh
+          ./scripts/publish_signal_supabase.sh "/tmp/signals/${{ steps.window.outputs.date }}.json"
+
+      - name: Record run outcome for the keepalive job
+        if: always()
+        run: |
+          mkdir -p /tmp/heartbeat
+          printf '{"last_run_utc":"%s","trading_date":"%s","run_kind":"%s","result":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "${{ steps.window.outputs.date }}" \
+            "${{ steps.window.outputs.run_kind }}" \
+            "${{ job.status }}" > /tmp/heartbeat/last-run.json
+
+      - name: Upload heartbeat
+        if: always() && steps.window.outputs.run_kind == 'post_close'
+        uses: actions/upload-artifact@v4
+        with:
+          name: heartbeat
+          path: /tmp/heartbeat/
+          retention-days: 1
+
+      - name: Upload pipeline logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/ingest.log
+            /tmp/enrich.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  keepalive:
+    name: Commit heartbeat (cron keepalive)
+    needs: signal
+    if: always() && needs.signal.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    # The previous daily design committed the signal JSON, and that commit
+    # doubled as the keepalive: GitHub disables scheduled workflows after 60 days
+    # of repository inactivity. Publishing to Supabase instead removes that
+    # commit, so the schedule would silently lapse after 60 days.
+    #
+    # This job restores it by committing a one-line heartbeat after the
+    # post-close run -- roughly one commit per trading day, which is far inside
+    # the 60-day window. It runs on the host rather than in the debian container
+    # so git and the checkout credential helper behave normally.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: heartbeat
+          path: .github/heartbeat
+        continue-on-error: true
+
+      - name: Commit heartbeat
+        run: |
+          set -euo pipefail
+          [ -f .github/heartbeat/last-run.json ] || { echo "No heartbeat produced (intraday run); nothing to commit."; exit 0; }
+          git config user.name  'arrakis-signal-bot'
+          git config user.email 'noreply@github.com'
+          git add .github/heartbeat/last-run.json
+          if git diff --cached --quiet; then
+            echo "Heartbeat unchanged."
+            exit 0
+          fi
+          git commit -m "chore: pipeline heartbeat $(jq -r '.trading_date' .github/heartbeat/last-run.json) [skip ci]"
+          git push

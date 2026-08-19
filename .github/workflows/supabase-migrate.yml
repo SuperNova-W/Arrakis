@@ -1,0 +1,65 @@
+name: Apply Supabase migrations
+
+# Manual only. Migrations are deliberately NOT run by the hourly signal
+# workflow: applying schema changes on every run is wasteful and makes a
+# failure mid-migration an hourly event rather than a deliberate one.
+#
+# Run this once during setup, and again whenever a new migrations/V*.sql lands.
+# The files use CREATE TABLE IF NOT EXISTS / CREATE OR REPLACE and guarded DO
+# blocks, so re-applying the full set is safe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY to confirm running migrations against Supabase.'
+        required: true
+        type: string
+
+jobs:
+  migrate:
+    name: Apply migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'APPLY'
+        run: |
+          echo "::error::Refusing to run: type APPLY in the confirm input." >&2
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - name: Install psql
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Apply migrations in order
+        working-directory: backend
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_DB_URL}" ]; then
+            echo "::error::SUPABASE_DB_URL secret is not set." >&2
+            exit 1
+          fi
+          for file in migrations/V*.sql; do
+            echo "--- $file"
+            psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -q -f "$file"
+          done
+          echo "Migrations applied."
+
+      - name: Report the anon-visible surface
+        working-directory: backend
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        # Prints exactly what the anon role can read, so an over-broad grant is
+        # visible in the run log rather than discovered later.
+        run: |
+          psql "$SUPABASE_DB_URL" -c "
+            SELECT table_name, privilege_type
+            FROM information_schema.role_table_grants
+            WHERE grantee = 'anon'
+            ORDER BY table_name, privilege_type;"

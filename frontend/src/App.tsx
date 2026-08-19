@@ -373,17 +373,24 @@ function Recommendation() {
   const prediction = ml.prediction.data?.prediction
   const news = ml.news.data ?? ml.insights.data
   const error = ml.prediction.error ?? ml.news.error ?? ml.insights.error
+  const noValidatedModel = ml.prediction.error?.code === 'NO_VALIDATED_MODEL'
+  // An intraday document is point-in-time correct but out-of-distribution: it
+  // sees only part of the day's news. Never present it as equivalent evidence
+  // to the post-close signal of record.
+  const document = ml.news.data ?? ml.insights.data ?? ml.prediction.data
+  const provisional = document != null && document.run_kind === 'intraday'
 
   return <>
     <Topbar eyebrow="RESEARCH / MODEL INSIGHTS" title="Recommendations">
       <label className="date-control"><span>Prediction date</span><input type="date" value={date} onChange={event => setDate(event.target.value)}/></label>
       <button className="outline-btn" onClick={ml.refresh}>Refresh</button>
     </Topbar>
-    <div className="notice-banner live-source"><Database size={17}/><div><b>Arrakis market-api research boundary</b><span>Prediction, news, and NLP insight data come from the date-scoped backend endpoints. The live chart remains on its separate Twelve Data and Finnhub path.</span></div><span className="chart-source">ML API</span></div>
+    <div className="notice-banner live-source"><Database size={17}/><div><b>Arrakis research boundary</b><span>Prediction, news, and NLP insight data are published by the hourly pipeline and read from the point-in-time research store. The live chart remains on its separate Twelve Data and Finnhub path.</span></div><span className="chart-source">Research store</span></div>
+    {provisional && <div className="inline-warning"><AlertTriangle size={14}/>Provisional intraday reading, generated at {ml.news.data?.generated_at ? new Date(ml.news.data.generated_at).toLocaleString() : 'an earlier time'}. It covers only part of the trading day&apos;s news, whereas every training observation saw a full day up to the 16:00 ET close, so its features sit outside the distribution the model was fitted on. The post-close run is the signal of record.</div>}
     {ml.loading ? <div className="panel recommendation-page"><div className="chart-placeholder large"/></div> : error && !prediction && !news ? <MlErrorState error={error} retry={ml.refresh}/> : <section className="recommendation-layout">
       <div className="panel insight-panel">
         <div className="panel-head"><div><div className="eyebrow">XLK · {date}</div><h2>Model recommendation</h2></div>{prediction && <span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span>}</div>
-        {prediction ? <>
+        {noValidatedModel ? <div className="empty-state"><AlertTriangle size={18}/><div><h2>No validated model</h2><p>{formatMlError(ml.prediction.error!)}</p><small className="mono">{ml.prediction.error!.code}</small></div></div> : prediction ? <>
           <div className="insight-primary"><strong>{(prediction.probability_positive_return * 100).toFixed(1)}%</strong><span>probability of next close up</span></div>
           <div className="confidence-track"><i style={{ width: `${Math.max(0, Math.min(100, prediction.probability_positive_return * 100))}%` }}/></div>
           <div className="insight-grid"><div><span>Signal direction</span><b>{prediction.direction}</b></div><div><span>Decision threshold</span><b>{(prediction.threshold * 100).toFixed(0)}%</b></div><div><span>Model</span><b>{prediction.model_id}</b></div><div><span>Feature coverage</span><b>{news?.coverage_status ?? '—'}</b></div></div>
@@ -403,15 +410,17 @@ function Recommendation() {
 function formatMlError(error: MlApiError) {
   switch (error.code) {
     case 'MODEL_UNAVAILABLE': return 'The versioned FinBERT/XGBoost artifacts are unavailable; no fallback prediction is shown.'
+    case 'NO_VALIDATED_MODEL': return 'No target has cleared the registered multi-window evaluation bar; no fallback prediction is shown.'
     case 'FEATURE_SCHEMA_MISMATCH': return 'Stored features do not match the active 36-feature model schema; prediction is blocked.'
-    case 'ML_DATABASE_UNAVAILABLE': return 'The ML feature database is unavailable; live market display is unaffected.'
+    case 'ML_DATABASE_UNAVAILABLE': return 'The research store rejected the request; live market display is unaffected.'
     case 'FEATURES_UNAVAILABLE': return 'The date has no complete market-plus-news feature vector yet.'
+    case 'NOT_CONFIGURED': return 'This build has no research-store credentials; set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.'
     default: return error.message
   }
 }
 
 function MlErrorState({ error, retry, compact = false }: { error: MlApiError; retry?: () => void; compact?: boolean }) {
-  const title = error.code === 'MODEL_UNAVAILABLE' ? 'Model artifact unavailable' : error.code === 'FEATURE_SCHEMA_MISMATCH' ? 'Feature schema mismatch' : error.code === 'ML_DATABASE_UNAVAILABLE' ? 'ML database unavailable' : error.code === 'INVALID_DATE' ? 'Invalid prediction date' : 'Research API unavailable'
+  const title = error.code === 'NO_VALIDATED_MODEL' ? 'No validated model' : error.code === 'MODEL_UNAVAILABLE' ? 'Model artifact unavailable' : error.code === 'FEATURE_SCHEMA_MISMATCH' ? 'Feature schema mismatch' : error.code === 'ML_DATABASE_UNAVAILABLE' ? 'Research store unavailable' : error.code === 'NOT_CONFIGURED' ? 'Research store not configured' : error.code === 'INVALID_DATE' ? 'Invalid prediction date' : 'Research store unavailable'
   return <div className={`panel empty-state finnhub-error ${compact ? 'compact' : ''}`}><WifiOff size={20}/><div><h2>{title}</h2><p>{formatMlError(error)}</p><small className="mono">{error.code}{error.status ? ` · HTTP ${error.status}` : ''}</small>{retry && <button className="outline-btn" onClick={retry}><RefreshCw size={14}/> Retry</button>}</div></div>
 }
 

@@ -60,9 +60,19 @@ std::string env(const char* name, std::string fallback = {}) {
     return value == nullptr ? std::move(fallback) : std::string(value);
 }
 
+bool env_true(const char* name) {
+    const auto value = env(name, "false");
+    return value == "1" || value == "true" || value == "TRUE" || value == "yes";
+}
+
 class NewsXGBoostModel final {
 public:
     NewsXGBoostModel() {
+        if (!env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED")) {
+            throw std::runtime_error{
+                "No validated XLK model is enabled; walk-forward promotion evidence is required"
+            };
+        }
         const auto path = env("ARRAKIS_XLK_NEWS_MODEL_PATH", "artifacts/xlk_news_xgboost.json");
         if (!std::filesystem::exists(path)) throw std::runtime_error("Local XGBoost artifact is missing: " + path);
         if (XGBoosterCreate(nullptr, 0, &booster_) != 0 || XGBoosterLoadModel(booster_, path.c_str()) != 0) {
@@ -290,6 +300,7 @@ boost::json::value route(
     const arrakis::database::PostgresPool* database,
     const LiveMarketStore& market,
     const NewsXGBoostModel* model,
+    bool model_validation_required,
     const arrakis::news::FinbertSession* finbert,
     const RuntimeState& runtime,
     std::string_view target,
@@ -335,7 +346,12 @@ boost::json::value route(
         if (path[4] == "news" || path[4] == "nlp-features") return news_json(snapshot);
         if (model == nullptr || finbert == nullptr || !finbert->ready()) {
             status = 503;
-            return error_json("MODEL_UNAVAILABLE", "The versioned FinBERT ONNX and XGBoost XLK artifacts are not available.");
+            return error_json(
+                model_validation_required ? "NO_VALIDATED_MODEL" : "MODEL_UNAVAILABLE",
+                model_validation_required
+                    ? "No validated XLK model is enabled; no fallback prediction is available."
+                    : "The versioned FinBERT ONNX and XGBoost XLK artifacts are not available."
+            );
         }
         std::vector<float> features;
         try {
@@ -416,6 +432,7 @@ http::response<http::string_body> handle(
     const arrakis::database::PostgresPool* database,
     const LiveMarketStore& market,
     const NewsXGBoostModel* model,
+    bool model_validation_required,
     const arrakis::news::FinbertSession* finbert,
     RuntimeState& runtime,
     const http::request<http::string_body>& request) {
@@ -458,7 +475,7 @@ http::response<http::string_body> handle(
     }
     unsigned status = 200;
     boost::json::value body;
-    try { body = route(database, market, model, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
+    try { body = route(database, market, model, model_validation_required, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
     catch (const std::invalid_argument& error) { status = 400; body = error_json("INVALID_REQUEST", error.what()); }
     catch (const std::exception& error) { status = 500; body = error_json("INTERNAL_ERROR", error.what()); }
     http::response<http::string_body> response{static_cast<http::status>(status), request.version()};
@@ -578,6 +595,7 @@ int main() {
             }
         });
         std::unique_ptr<NewsXGBoostModel> model;
+        const bool model_validation_required = !env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED");
         try { model = std::make_unique<NewsXGBoostModel>(); }
         catch (const std::exception& error) { std::cerr << "{\"service\":\"market-api\",\"event\":\"model_unavailable\",\"error\":\"" << error.what() << "\"}\n"; }
         std::unique_ptr<arrakis::news::FinbertSession> finbert;
@@ -629,7 +647,7 @@ int main() {
             }
             auto response = request.method() == http::verb::options
                 ? http::response<http::string_body>{http::status::no_content, request.version()}
-                : handle(database.get(), market, model.get(), finbert.get(), runtime, request);
+                : handle(database.get(), market, model.get(), model_validation_required, finbert.get(), runtime, request);
             if (request.method() == http::verb::options) runtime.api_requests.fetch_add(1);
             response.set(http::field::access_control_allow_origin, env("CORS_ALLOWED_ORIGINS", "http://localhost:3000"));
             response.set(http::field::access_control_allow_methods, "GET,OPTIONS");

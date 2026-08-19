@@ -7,14 +7,17 @@ manifest="$artifact.manifest.json"
 predictions="$artifact.test_predictions.csv"
 api_url=${ARRAKIS_MARKET_API_URL:-}
 
+skip_test() {
+    echo "SKIP: $1" >&2
+    exit 77
+}
+
 if [ ! -f "$artifact" ] || [ ! -f "$manifest" ] || [ ! -f "$predictions" ]; then
-    echo "SKIP: trained XLK artifact, manifest, and held-out predictions are required"
-    exit 0
+    skip_test "trained XLK artifact, manifest, and held-out predictions are required"
 fi
 
 if [ -z "$api_url" ]; then
-    echo "SKIP: set ARRAKIS_MARKET_API_URL to run the REST portion against a live market-api"
-    exit 0
+    skip_test "set ARRAKIS_MARKET_API_URL to run the REST portion against a live market-api"
 fi
 
 test_date=${ARRAKIS_INTEGRATION_TEST_DATE:-2023-12-28}

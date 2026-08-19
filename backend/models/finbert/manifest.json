@@ -5,6 +5,9 @@
   "vocabulary_filename": "vocab.txt",
   "model_sha256": "4a8d58ba2f8d74c7fca30fdb49fbbe367b64760104b64e8623e896a007229a6e",
   "vocabulary_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+  "derived_embedding_model_filename": "model_with_pooled_embedding.onnx",
+  "derived_embedding_model_sha256": "c7f8304257b2a587d9d9b348410b3809cc9403da909cc0331a63294426e4205a",
+  "derived_embedding_model_contract": "Base graph plus attention-mask mean-pooled final hidden state named pooled_embedding",
   "model_contract": {
     "inputs": ["input_ids", "attention_mask", "token_type_ids (optional)"],
     "logits_output_order": ["positive", "negative", "neutral"],

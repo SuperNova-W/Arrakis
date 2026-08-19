@@ -32,7 +32,23 @@ struct DailyNewsFeatures final {
 };
 
 [[nodiscard]] bool eligible_at_cutoff(const Article& article, std::int64_t cutoff_unix_ms);
+
+// `window_start_unix_ms` is an INCLUSIVE lower bound on publication time.
+//
+// It exists for train/serve parity. build_xlk_combined_dataset groups training
+// articles by their own calendar date, so every training row aggregates exactly
+// one day of news. The streaming path instead consumes whatever news-ingestion
+// republished, which is NEWS_POLL_LOOKBACK_DAYS deep (3 by default) -- so
+// without a lower bound the live `article_count` counts roughly three days of
+// articles against a model trained on one, and `abnormal_news_volume`,
+// `news_coverage` and `news_freshness_hours` are distorted with it.
+//
+// The default of 0 keeps the historical single-argument behaviour for the batch
+// builder, whose per-day grouping already bounds the window.
+[[nodiscard]] bool eligible_in_window(const Article& article, std::int64_t window_start_unix_ms,
+                                      std::int64_t cutoff_unix_ms);
 [[nodiscard]] DailyNewsFeatures aggregate_daily(std::string trading_date, std::int64_t cutoff_unix_ms,
-                                                std::vector<EnrichedArticle> articles);
+                                                std::vector<EnrichedArticle> articles,
+                                                std::int64_t window_start_unix_ms = 0);
 
 }  // namespace arrakis::news

@@ -10,8 +10,14 @@
 
 namespace arrakis::news {
 
-inline constexpr std::string_view kCombinedFeatureSchemaHash{"xlk-combined-features-v1"};
+inline constexpr std::string_view kCombinedFeatureSchemaHash{"xlk-combined-features-v2"};
 inline constexpr std::string_view kNewsFeatureSchemaHash{"xlk-news-features-v1"};
+inline constexpr std::string_view kLogitsOnlyNewsFeatureSchemaHash{
+    "xlk-news-logits-only-features-v3"
+};
+inline constexpr std::string_view kLogitsOnlyCombinedFeatureSchemaHash{
+    "xlk-logits-only-combined-features-v3"
+};
 
 inline constexpr std::array<std::string_view, 9> kMarketFeatureNames{
     "ret_1", "ret_3", "ret_6", "volatility_6", "volume_mean_6", "rel_volume",
@@ -29,11 +35,33 @@ inline constexpr std::size_t kMarketFeatureCount = kMarketFeatureNames.size();
 inline constexpr std::size_t kNewsFeatureCount = kNewsFeatureNames.size();
 inline constexpr std::size_t kCombinedFeatureCount = kMarketFeatureCount + kNewsFeatureCount;
 
+// The frozen FinBERT artifact currently exposes sentiment logits only. Keep
+// this contract separate from the legacy 27-column streaming shape so a batch
+// dataset cannot silently claim to contain embeddings that are all zero.
+inline constexpr std::array<std::string_view, 19> kLogitsOnlyNewsFeatureNames{
+    "article_count", "positive_proportion", "neutral_proportion", "negative_proportion",
+    "average_sentiment", "max_positive_sentiment", "max_negative_sentiment", "sentiment_stddev",
+    "time_decayed_sentiment", "entity_weighted_sentiment", "holding_sentiment", "abnormal_news_volume",
+    "article_novelty", "source_weighted_sentiment", "cross_article_disagreement", "sector_breadth",
+    "macro_news_count", "news_coverage", "news_freshness_hours"};
+
+inline constexpr std::size_t kLogitsOnlyNewsFeatureCount = kLogitsOnlyNewsFeatureNames.size();
+inline constexpr std::size_t kLogitsOnlyCombinedFeatureCount =
+    kMarketFeatureCount + kLogitsOnlyNewsFeatureCount;
+
 [[nodiscard]] inline std::vector<std::string> combined_feature_names() {
     std::vector<std::string> names;
     names.reserve(kCombinedFeatureCount);
     for (const auto name : kMarketFeatureNames) names.emplace_back(name);
     for (const auto name : kNewsFeatureNames) names.emplace_back(name);
+    return names;
+}
+
+[[nodiscard]] inline std::vector<std::string> logits_only_combined_feature_names() {
+    std::vector<std::string> names;
+    names.reserve(kLogitsOnlyCombinedFeatureCount);
+    for (const auto name : kMarketFeatureNames) names.emplace_back(name);
+    for (const auto name : kLogitsOnlyNewsFeatureNames) names.emplace_back(name);
     return names;
 }
 

@@ -22,8 +22,12 @@ bool eligible_at_cutoff(const Article& article, std::int64_t cutoff_unix_ms) {
     return article.published_at_unix_ms > 0 && article.published_at_unix_ms <= cutoff_unix_ms;
 }
 
-DailyNewsFeatures aggregate_daily(std::string trading_date, std::int64_t cutoff_unix_ms, std::vector<EnrichedArticle> articles) {
-    articles.erase(std::remove_if(articles.begin(), articles.end(), [&](const auto& item) { return !eligible_at_cutoff(item.article, cutoff_unix_ms); }), articles.end());
+bool eligible_in_window(const Article& article, std::int64_t window_start_unix_ms, std::int64_t cutoff_unix_ms) {
+    return eligible_at_cutoff(article, cutoff_unix_ms) && article.published_at_unix_ms >= window_start_unix_ms;
+}
+
+DailyNewsFeatures aggregate_daily(std::string trading_date, std::int64_t cutoff_unix_ms, std::vector<EnrichedArticle> articles, std::int64_t window_start_unix_ms) {
+    articles.erase(std::remove_if(articles.begin(), articles.end(), [&](const auto& item) { return !eligible_in_window(item.article, window_start_unix_ms, cutoff_unix_ms); }), articles.end());
     DailyNewsFeatures output; output.trading_date = std::move(trading_date); output.cutoff_unix_ms = cutoff_unix_ms; output.feature_names = names; output.values.assign(names.size(), 0.0);
     if (articles.empty()) return output;
     std::vector<double> sentiments, positive, negative, decayed, weighted, novelty, source_weighted;

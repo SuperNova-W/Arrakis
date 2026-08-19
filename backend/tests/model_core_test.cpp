@@ -1,7 +1,9 @@
 #include "arrakis/model/dataset.hpp"
 #include "arrakis/model/metrics.hpp"
 #include "arrakis/model/sector_ml.hpp"
+#include "arrakis/news/xlk_membership.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <cstdlib>
@@ -11,6 +13,10 @@
 
 #ifndef ARRAKIS_SAMPLE_DATASET_PATH
 #define ARRAKIS_SAMPLE_DATASET_PATH "services/ml_model/data/sample_features.csv"
+#endif
+
+#ifndef ARRAKIS_XLK_HOLDINGS_HISTORY_PATH
+#define ARRAKIS_XLK_HOLDINGS_HISTORY_PATH "data/metadata/xlk_holdings_history.csv"
 #endif
 
 namespace {
@@ -43,6 +49,16 @@ void test_chronological_split() {
     require(exact.validation.row_count() == 2, "Exact split validation boundary moved");
     require(exact.test.row_count() == 2, "Exact split test boundary moved");
     require(exact.test.dates.front() == "2026-01-09", "Exact split test start moved");
+
+    const auto window = arrakis::model::date_slice(dataset, "2026-01-03", "2026-01-05");
+    require(window.row_count() == 3, "Date slice row count moved");
+    require(window.dates.front() == "2026-01-03" && window.dates.back() == "2026-01-05",
+            "Date slice boundaries moved");
+
+    const auto rows = arrakis::model::row_slice(dataset, 2, 5);
+    require(rows.row_count() == 3, "Row slice row count moved");
+    require(rows.dates.front() == "2026-01-03" && rows.dates.back() == "2026-01-05",
+            "Row slice boundaries moved");
 }
 
 void test_binary_metrics() {
@@ -190,6 +206,135 @@ void test_sector_training_and_inference_roundtrip() {
     require(std::isfinite(prediction.predicted_return), "Prediction should be finite");
 }
 
+// Regression coverage for the FNSPID importer's point-in-time XLK membership.
+//
+// `arrakis-import-fnspid` used to build per-symbol intervals that were closed at
+// the next row for the same symbol, leaving the final row of every symbol open
+// on the file's 2099-12-31 sentinel. That kept departed constituents "held"
+// forever and bridged re-entry gaps. The importer now links the single shared
+// resolver exercised below, so these assertions cover the importer's filter.
+void test_point_in_time_xlk_membership() {
+    const auto history =
+        arrakis::news::XlkMembershipResolver::from_csv(ARRAKIS_XLK_HOLDINGS_HISTORY_PATH);
+
+    require(history.snapshots().size() == 17, "Expected 17 quarterly N-PORT snapshots");
+    require(history.first_snapshot_date() == "2019-09-30", "Unexpected first snapshot date");
+    require(history.last_snapshot_date() == "2023-09-30", "Unexpected last snapshot date");
+
+    // 1. Survivorship / lookahead. V and MA last appear in the 2022-12-31
+    // filing; they left XLK in the March 2023 GICS reclassification. The whole
+    // of 2023 is the test year in every published evaluation, so treating them
+    // as constituents there contaminated the test set.
+    for (const auto* symbol :
+         {"V", "MA", "PYPL", "ADP", "PAYX", "FIS", "FISV", "GPN", "BR", "JKHY"}) {
+        require(
+            history.held_on(symbol, "2023-03-30"),
+            std::string{symbol} + " should still be held on 2023-03-30"
+        );
+        require(
+            !history.held_on(symbol, "2023-03-31"),
+            std::string{symbol} + " must not be held on 2023-03-31, the first day of the "
+                                  "snapshot that dropped it"
+        );
+        require(
+            !history.held_on(symbol, "2023-12-28"),
+            std::string{symbol} + " must not be held anywhere in the 2023 test year after the "
+                                  "reclassification"
+        );
+    }
+
+    // Departures at other snapshot boundaries must behave the same way. The old
+    // importer carried every one of these forward to 2099-12-31.
+    struct Departure final {
+        const char* symbol;
+        const char* last_covered_date;  // last date the symbol is still a constituent
+        const char* first_absent_date;  // first day of the snapshot that dropped it
+    };
+    for (const auto& departure : {
+             Departure{"LDOS", "2021-03-30", "2021-03-31"},
+             Departure{"VNT", "2021-03-30", "2021-03-31"},
+             Departure{"XRXDW", "2021-03-30", "2021-03-31"},
+             Departure{"IPGP", "2022-06-29", "2022-06-30"},
+             Departure{"PAYC", "2023-06-29", "2023-06-30"},
+         }) {
+        require(
+            history.held_on(departure.symbol, departure.last_covered_date),
+            std::string{departure.symbol} + " should be held on " + departure.last_covered_date
+        );
+        require(
+            !history.held_on(departure.symbol, departure.first_absent_date),
+            std::string{departure.symbol} + " must not be held on " + departure.first_absent_date
+        );
+        require(
+            !history.held_on(departure.symbol, "2023-12-28"),
+            std::string{departure.symbol} + " must not be carried forward to the end of the test year"
+        );
+    }
+
+    // 2. Re-entry gaps must not be bridged. CSCO is absent from all four 2021
+    // filings and returns in the 2022-03-31 filing.
+    require(history.held_on("CSCO", "2021-03-30"), "CSCO should be held up to 2021-03-30");
+    for (const auto* date : {"2021-03-31", "2021-06-30", "2021-09-30", "2021-12-31",
+                             "2022-03-30"}) {
+        require(
+            !history.held_on("CSCO", date),
+            std::string{"CSCO must not be held on "} + date + " (absent from the 2021 filings)"
+        );
+    }
+    require(history.held_on("CSCO", "2022-03-31"), "CSCO should be held again from 2022-03-31");
+
+    // 3. The shipped CSV was assembled by concatenation and repeats its own
+    // header. The old importer ingested that row as a holding for a symbol
+    // literally named "symbol".
+    for (const auto& snapshot : history.snapshots()) {
+        for (const auto& constituent : snapshot.constituents) {
+            require(
+                constituent.symbol != "symbol" && constituent.symbol != "effective_from",
+                "The repeated header row must never be ingested as a constituent"
+            );
+        }
+        require(snapshot.constituents.size() >= 30, "Implausibly small XLK snapshot");
+    }
+    require(
+        !history.held_on("symbol", "2023-06-30"),
+        "A symbol named 'symbol' must never resolve as held"
+    );
+    // The duplicated first AAPL row is collapsed rather than double-counted.
+    const auto& first = history.constituents_on("2019-09-30");
+    require(
+        std::count_if(
+            first.begin(), first.end(),
+            [](const auto& constituent) { return constituent.symbol == "AAPL"; }
+        ) == 1,
+        "The duplicated AAPL row must be collapsed to a single constituent"
+    );
+
+    // 4. No current-holdings fallback before the first filing.
+    require(
+        history.constituents_on("2019-09-29").empty(),
+        "Membership before the first snapshot must be empty"
+    );
+    require(
+        history.constituents_on("2019-01-02").empty(),
+        "Membership before the first snapshot must be empty"
+    );
+    require(!history.held_on("AAPL", "2019-09-29"), "AAPL must not be held before 2019-09-30");
+    require(
+        !history.governing_snapshot("2019-09-29").has_value(),
+        "No snapshot governs a date before the first filing"
+    );
+
+    // 5. Forward carry of the final filing is flagged rather than hidden.
+    require(
+        !history.is_extrapolated_forward("2023-09-29"),
+        "2023-09-29 is covered by a filing, not extrapolated"
+    );
+    require(
+        history.is_extrapolated_forward("2023-12-28"),
+        "Dates after the last filing must be flagged as carried forward"
+    );
+}
+
 }  // namespace
 
 int main() {
@@ -197,6 +342,7 @@ int main() {
         test_chronological_split();
         test_binary_metrics();
         test_sample_dataset_contract();
+        test_point_in_time_xlk_membership();
         std::cout << "All model-core tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

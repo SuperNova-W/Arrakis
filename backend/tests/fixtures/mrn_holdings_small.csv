@@ -1,0 +1,4 @@
+sector,symbol,effective_from,available_from,effective_to,weight,source
+XLB,AAA,2019-01-01,2019-01-01,2099-12-31,1.0,mrn-fixture
+XLB,BBB,2019-01-01,2019-01-01,2099-12-31,0.5,mrn-fixture
+XLB,AAA,2019-01-04,2019-01-04,2099-12-31,1.0,mrn-fixture

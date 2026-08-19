@@ -120,9 +120,9 @@ bool PostgresPool::schema_ready() const {
     try {
         const auto lease = impl_->acquire();
         Result result(PQexec(lease.connection,
-            "SELECT COUNT(*) FROM pg_class WHERE relname IN ('etf_metadata','etf_bars_1m','etf_bars_5m','news_articles','news_article_entities','news_nlp_features','etf_daily_news_features','model_registry')"));
+            "SELECT COUNT(*) FROM pg_class WHERE relname IN ('etf_metadata','etf_bars_1m','etf_bars_5m','etf_bars_daily','news_articles','news_article_entities','news_nlp_features','etf_daily_news_features','model_registry')"));
         return result.get() != nullptr && PQresultStatus(result.get()) == PGRES_TUPLES_OK &&
-            std::string(PQgetvalue(result.get(), 0, 0)) == "8";
+            std::string(PQgetvalue(result.get(), 0, 0)) == "9";
     } catch (...) { return false; }
 }
 
@@ -204,34 +204,93 @@ std::vector<bar_aggregator::MarketBar> PostgresPool::bars(std::string_view symbo
 
 std::vector<DailyMarketBar> PostgresPool::daily_market_bars(
     std::string_view symbol, std::int64_t cutoff_unix_ms, std::size_t lookback_days) const {
+    // Completed sessions come from the true end-of-day table so that the live
+    // features are on the same scale as the training dataset.  Only the
+    // still-open session is reconstructed from the intraday stream.  Both
+    // branches respect the point-in-time cutoff: a daily bar is admitted only
+    // once its 16:00 America/New_York close is at or before the cutoff, and
+    // intraday bars only when bar_end is at or before the cutoff.
     const auto lease = impl_->acquire();
     const std::string symbol_value(symbol);
     const std::string cutoff = std::to_string(cutoff_unix_ms);
     const std::string lookback = std::to_string(lookback_days);
     const char* values[] = {symbol_value.c_str(), cutoff.c_str(), lookback.c_str()};
-    constexpr std::string_view query =
-        "WITH source_bars AS ("
-        " SELECT (bar_end AT TIME ZONE 'America/New_York')::date::text AS trading_date,"
-        "        bar_end, close, volume"
+
+    constexpr std::string_view completed_query =
+        "SELECT trading_date::text, close, volume FROM etf_bars_daily"
+        " WHERE symbol=$1"
+        "   AND trading_date <= (to_timestamp($2::double precision/1000.0)"
+        "       AT TIME ZONE 'America/New_York')::date"
+        "   AND trading_date >= (to_timestamp($2::double precision/1000.0)"
+        "       AT TIME ZONE 'America/New_York')::date - $3::integer"
+        " ORDER BY trading_date";
+    Result completed_result(
+        PQexecParams(lease.connection, completed_query.data(), 3, nullptr, values, nullptr, nullptr, 0));
+    require_result(completed_result.get(), PGRES_TUPLES_OK);
+    std::vector<DailyMarketBar> completed;
+    completed.reserve(static_cast<std::size_t>(PQntuples(completed_result.get())));
+    for (int row = 0; row < PQntuples(completed_result.get()); ++row) {
+        completed.push_back({PQgetvalue(completed_result.get(), row, 0),
+                             std::stod(PQgetvalue(completed_result.get(), row, 1)),
+                             std::stod(PQgetvalue(completed_result.get(), row, 2))});
+    }
+    completed = filter_completed_sessions(std::move(completed), cutoff_unix_ms);
+
+    constexpr std::string_view in_progress_query =
+        "SELECT (bar_end AT TIME ZONE 'America/New_York')::date::text AS trading_date,"
+        "       (array_agg(close ORDER BY bar_end DESC))[1] AS close,"
+        "       SUM(volume) AS volume"
         " FROM etf_bars_5m"
         " WHERE symbol=$1"
         "   AND bar_end <= to_timestamp($2::double precision/1000.0)"
-        "   AND bar_end >= to_timestamp($2::double precision/1000.0) - ($3::integer * interval '1 day')"
-        "), daily AS ("
-        " SELECT trading_date,"
-        "        (array_agg(close ORDER BY bar_end DESC))[1] AS close,"
-        "        SUM(volume) AS volume"
-        " FROM source_bars GROUP BY trading_date"
-        ") SELECT trading_date, close, volume FROM daily ORDER BY trading_date";
-    Result result(PQexecParams(lease.connection, query.data(), 3, nullptr, values, nullptr, nullptr, 0));
-    require_result(result.get(), PGRES_TUPLES_OK);
-    std::vector<DailyMarketBar> output;
-    output.reserve(static_cast<std::size_t>(PQntuples(result.get())));
-    for (int row = 0; row < PQntuples(result.get()); ++row) {
-        output.push_back({PQgetvalue(result.get(), row, 0), std::stod(PQgetvalue(result.get(), row, 1)),
-                          std::stod(PQgetvalue(result.get(), row, 2))});
+        "   AND (bar_end AT TIME ZONE 'America/New_York')::date ="
+        "       (to_timestamp($2::double precision/1000.0) AT TIME ZONE 'America/New_York')::date"
+        " GROUP BY 1";
+    Result in_progress_result(
+        PQexecParams(lease.connection, in_progress_query.data(), 2, nullptr, values, nullptr, nullptr, 0));
+    require_result(in_progress_result.get(), PGRES_TUPLES_OK);
+    std::vector<DailyMarketBar> in_progress;
+    in_progress.reserve(static_cast<std::size_t>(PQntuples(in_progress_result.get())));
+    for (int row = 0; row < PQntuples(in_progress_result.get()); ++row) {
+        in_progress.push_back({PQgetvalue(in_progress_result.get(), row, 0),
+                               std::stod(PQgetvalue(in_progress_result.get(), row, 1)),
+                               std::stod(PQgetvalue(in_progress_result.get(), row, 2))});
     }
-    return output;
+
+    return merge_daily_and_intraday(std::move(completed), in_progress);
+}
+
+std::size_t PostgresPool::upsert_daily_bars(const std::vector<DailyBarRecord>& bars, std::string_view source) {
+    if (bars.empty()) return 0;
+    const auto lease = impl_->acquire();
+    const std::string source_value(source);
+    Result begin(PQexec(lease.connection, "BEGIN"));
+    require_result(begin.get());
+    try {
+        for (const auto& bar : bars) {
+            const std::string open = std::to_string(bar.open), high = std::to_string(bar.high),
+                              low = std::to_string(bar.low), close = std::to_string(bar.close),
+                              volume = std::to_string(bar.volume);
+            const char* values[] = {bar.symbol.c_str(), bar.trading_date.c_str(), open.c_str(), high.c_str(),
+                                    low.c_str(),        close.c_str(),            volume.c_str(),
+                                    source_value.c_str()};
+            Result result(PQexecParams(lease.connection,
+                "INSERT INTO etf_bars_daily(symbol,trading_date,open,high,low,close,volume,source)"
+                " VALUES($1,$2::date,$3,$4,$5,$6,$7,$8)"
+                " ON CONFLICT(symbol,trading_date) DO UPDATE SET"
+                " open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,"
+                " volume=EXCLUDED.volume,source=EXCLUDED.source,inserted_at=NOW()",
+                8, nullptr, values, nullptr, nullptr, 0));
+            require_result(result.get());
+        }
+        Result commit(PQexec(lease.connection, "COMMIT"));
+        require_result(commit.get());
+    } catch (...) {
+        Result rollback(PQexec(lease.connection, "ROLLBACK"));
+        static_cast<void>(rollback);
+        throw;
+    }
+    return bars.size();
 }
 
 void PostgresPool::persist_news_article(const NewsArticle& article, std::string_view normalized_content_hash,

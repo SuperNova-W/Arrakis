@@ -14,6 +14,7 @@ project(
 include(CTest)
 
 option(ARRAKIS_BUILD_XGBOOST_TRAINER "Build the XGBoost baseline trainer" ON)
+option(ARRAKIS_BUILD_TCN_TRAINER "Build the Apple MLX C++ TCN trainer" OFF)
 option(ARRAKIS_BUILD_MARKET_STREAM "Build the Finnhub market-data WebSocket client" ON)
 option(ARRAKIS_BUILD_MARKET_API "Build the market REST/WebSocket API and XGBoost inference runtime" ON)
 option(ARRAKIS_BUILD_ML_RUNTIME "Build deferred feature and prediction services" ON)
@@ -33,8 +34,10 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
 endif()
 
-add_subdirectory(services/ml_model)
+# news_nlp is added first because it defines arrakis_xlk_membership, the shared
+# point-in-time XLK constituent resolver that the ml_model FNSPID importer links.
 add_subdirectory(services/news_nlp)
+add_subdirectory(services/ml_model)
 
 if(ARRAKIS_BUILD_MARKET_STREAM)
     set(PROTO_FILES
@@ -143,9 +146,13 @@ if(ARRAKIS_BUILD_MARKET_STREAM)
             OpenSSL::Crypto
     )
 
+    add_executable(daily-bar-loader src/daily_bar_loader.cpp)
+    target_compile_features(daily-bar-loader PRIVATE cxx_std_20)
+    target_link_libraries(daily-bar-loader PRIVATE arrakis_database_core)
+
     add_executable(news-ingestion src/news_stream.cpp)
     target_compile_features(news-ingestion PRIVATE cxx_std_20)
-    target_link_libraries(news-ingestion PRIVATE arrakis_market_core OpenSSL::Crypto)
+    target_link_libraries(news-ingestion PRIVATE arrakis_market_core arrakis_news_nlp_core OpenSSL::Crypto)
 
     add_executable(news-enricher src/news_enricher.cpp)
     target_compile_features(news-enricher PRIVATE cxx_std_20)
@@ -202,11 +209,12 @@ endif()
 if(BUILD_TESTING AND ARRAKIS_BUILD_XGBOOST_TRAINER)
     add_executable(arrakis_model_core_tests tests/model_core_test.cpp)
     target_compile_features(arrakis_model_core_tests PRIVATE cxx_std_20)
-    target_link_libraries(arrakis_model_core_tests PRIVATE arrakis_model_core)
+    target_link_libraries(arrakis_model_core_tests PRIVATE arrakis_model_core arrakis_xlk_membership)
     target_compile_definitions(
         arrakis_model_core_tests
         PRIVATE
             ARRAKIS_SAMPLE_DATASET_PATH="${CMAKE_CURRENT_SOURCE_DIR}/services/ml_model/data/sample_features.csv"
+            ARRAKIS_XLK_HOLDINGS_HISTORY_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/metadata/xlk_holdings_history.csv"
     )
     add_test(NAME arrakis_model_core_tests COMMAND arrakis_model_core_tests)
 
@@ -220,6 +228,12 @@ if(BUILD_TESTING AND ARRAKIS_BUILD_XGBOOST_TRAINER)
         target_compile_features(arrakis_historical_data_tests PRIVATE cxx_std_20)
         target_link_libraries(arrakis_historical_data_tests PRIVATE arrakis_market_core)
         add_test(NAME arrakis_historical_data_tests COMMAND arrakis_historical_data_tests)
+
+        add_executable(arrakis_daily_bars_tests tests/daily_bars_test.cpp)
+        target_compile_features(arrakis_daily_bars_tests PRIVATE cxx_std_20)
+        target_include_directories(arrakis_daily_bars_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_link_libraries(arrakis_daily_bars_tests PRIVATE GTest::gtest_main)
+        add_test(NAME arrakis_daily_bars_tests COMMAND arrakis_daily_bars_tests)
 
         add_executable(arrakis_streaming_tests tests/streaming_core_test.cpp)
         target_compile_features(arrakis_streaming_tests PRIVATE cxx_std_20)
@@ -235,5 +249,17 @@ if(BUILD_TESTING AND ARRAKIS_BUILD_XGBOOST_TRAINER)
         add_test(NAME arrakis_finbert_smoke_test COMMAND arrakis_finbert_smoke_test)
         add_test(NAME arrakis_news_inference_integration
             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/news_inference_integration.sh)
+        set_tests_properties(arrakis_news_inference_integration PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME arrakis_mrn_ingestion_fixture
+            COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/mrn_ingestion_integration.sh
+                $<TARGET_FILE:arrakis-build-mrn-sector-articles>)
     endif()
+endif()
+
+if(BUILD_TESTING)
+    add_executable(arrakis_market_feature_tests tests/market_features_test.cpp)
+    target_compile_features(arrakis_market_feature_tests PRIVATE cxx_std_20)
+    target_include_directories(arrakis_market_feature_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/services/news_nlp/include)
+    target_link_libraries(arrakis_market_feature_tests PRIVATE GTest::gtest_main)
+    add_test(NAME arrakis_market_feature_tests COMMAND arrakis_market_feature_tests)
 endif()

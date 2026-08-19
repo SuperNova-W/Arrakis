@@ -91,6 +91,9 @@ services:
       NEWS_RAW_TOPIC: news.raw.articles
       NEWS_POLL_INTERVAL_SECONDS: ${NEWS_POLL_INTERVAL_SECONDS:-900}
       NEWS_POLL_LOOKBACK_DAYS: ${NEWS_POLL_LOOKBACK_DAYS:-3}
+      XLK_HOLDINGS_HISTORY: /opt/arrakis/data/metadata/xlk_holdings_history.csv
+    volumes:
+      - ./data/metadata:/opt/arrakis/data/metadata:ro
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -135,6 +138,7 @@ services:
       ARRAKIS_ETF_UNIVERSE: /opt/arrakis/config/etf_universe.json
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       ARRAKIS_XLK_NEWS_MODEL_PATH: /opt/arrakis/artifacts/xlk_news_xgboost.json
+      ARRAKIS_XLK_NEWS_MODEL_VALIDATED: ${ARRAKIS_XLK_NEWS_MODEL_VALIDATED:-false}
       ARRAKIS_FINBERT_ONNX_PATH: /opt/arrakis/models/finbert/model.onnx
       ARRAKIS_FINBERT_VOCAB_PATH: /opt/arrakis/models/finbert/vocab.txt
     depends_on:
@@ -149,6 +153,25 @@ services:
       start_period: 10s
       retries: 20
     restart: unless-stopped
+
+  daily-bar-loader:
+    build:
+      context: .
+    command: ["/opt/arrakis/daily-bar-loader", "/opt/arrakis/data/history"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-market_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arrakis-local-dev-only}
+      POSTGRES_SSLMODE: disable
+      ARRAKIS_DAILY_BAR_SYMBOLS: ${ARRAKIS_DAILY_BAR_SYMBOLS:-XLK,SPY}
+    volumes:
+      - ./data/history:/opt/arrakis/data/history:ro
+    depends_on:
+      postgres-migrations:
+        condition: service_completed_successfully
+    restart: "no"
 
   news-enricher:
     build:
@@ -175,6 +198,8 @@ services:
       kafka-init:
         condition: service_completed_successfully
       postgres-migrations:
+        condition: service_completed_successfully
+      daily-bar-loader:
         condition: service_completed_successfully
     restart: unless-stopped
 

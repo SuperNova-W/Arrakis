@@ -27,6 +27,8 @@ public:
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] const std::string& model_version() const noexcept;
     [[nodiscard]] const std::string& tokenizer_version() const noexcept;
+    // Stable identity of the exact padded model inputs used by infer().
+    [[nodiscard]] std::string token_input_hash(const std::string& text) const;
     [[nodiscard]] std::vector<FinbertOutput> infer(const std::vector<std::string>& texts) const;
 
 private:

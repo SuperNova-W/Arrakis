@@ -1,0 +1,154 @@
+name: CI
+
+# GitHub Actions is free for public repositories on standard GitHub-hosted runners.
+# SuperNova-W/Arrakis is PUBLIC, so both jobs below cost $0.
+#
+# If this repo is ever made private, the macOS runner used by the `backend` job bills at
+# $0.062/minute (docs.github.com/en/billing/.../about-billing-for-github-actions, fetched
+# 2026-08-08). A ~15-minute build is then ~$0.93 per run, and the GitHub Free plan's 2,000
+# included minutes/month are consumed at the macOS multiplier. Going private makes this
+# workflow the single largest recurring cost in the project.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: C++ build and ctest
+    # macOS is used deliberately, not by preference: the backend needs `xgboost` and
+    # `onnxruntime` CMake config packages, and both are homebrew/core formulae. Neither has an
+    # apt package on ubuntu-latest, so a Linux job would have to build XGBoost from source or
+    # pull in vcpkg. This mirrors the exact dependency list in backend/README.md.
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    env:
+      # Deliberately NOT set: ARRAKIS_FINBERT_ONNX_PATH / ARRAKIS_FINBERT_VOCAB_PATH.
+      # The FinBERT ONNX artifact is 438 MB and is not in git (backend/.gitignore excludes
+      # models/finbert/* apart from README.md and manifest.json). CI must never download it.
+      # With those variables unset:
+      #   - arrakis_finbert_smoke_test calls GTEST_SKIP() (tests/finbert_smoke_test.cpp)
+      #   - arrakis_news_inference_integration exits 77, and CMakeLists.txt marks it
+      #     SKIP_RETURN_CODE 77, so ctest records it as Skipped rather than Failed.
+      # Both skips are verified locally; see the note at the bottom of this file.
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if the FinBERT model was committed
+        # A 438 MB blob in git would blow up every clone, including this one. Guard it.
+        run: |
+          if git ls-files --error-unmatch models/finbert/model.onnx >/dev/null 2>&1; then
+            echo "::error::models/finbert/model.onnx is tracked in git; it must stay ignored." >&2
+            exit 1
+          fi
+          echo "OK: FinBERT ONNX artifact is not tracked in git."
+
+      - name: Install native dependencies
+        run: |
+          set -euo pipefail
+          brew update --quiet
+          # Same list as backend/README.md, plus googletest (find_package(GTest REQUIRED))
+          # and xgboost (find_package(xgboost CONFIG REQUIRED)).
+          for formula in cmake ninja boost openssl@3 protobuf librdkafka libpq onnxruntime xgboost googletest; do
+            if brew list --versions "$formula" >/dev/null 2>&1; then
+              echo "already installed: $formula"
+            else
+              brew install --quiet --formula "$formula"
+            fi
+          done
+
+      - name: Record toolchain versions
+        run: |
+          cmake --version
+          ninja --version
+          c++ --version
+          for formula in boost protobuf librdkafka libpq onnxruntime xgboost googletest; do
+            printf '%s: ' "$formula"
+            brew list --versions "$formula" || echo '(missing)'
+          done
+
+      - name: Configure
+        # Preset names come from backend/CMakePresets.json. `debug` is the only preset that
+        # both enables BUILD_TESTING and leaves ARRAKIS_BUILD_XGBOOST_TRAINER=ON; the
+        # `core-only` preset turns the trainer off, and CMakeLists.txt guards every add_test()
+        # behind `if(BUILD_TESTING AND ARRAKIS_BUILD_XGBOOST_TRAINER)`, so core-only registers
+        # zero tests and would make ctest vacuously green.
+        run: cmake --preset debug
+
+      - name: Build
+        run: cmake --build --preset debug
+
+      - name: Test
+        run: ctest --preset debug --output-on-failure --no-tests=error
+
+      - name: Test summary
+        if: always()
+        run: ctest --preset debug --show-only=human || true
+
+  frontend:
+    name: Frontend build and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        # `npm run build` is `tsc -b && vite build`, so this type-checks as well as bundles.
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+# ---------------------------------------------------------------------------------------------
+# Validation status — read this before trusting the workflow.
+#
+# VERIFIED locally on the developer machine (macOS 26 / Darwin 25.3.0, arm64, Homebrew), on
+# 2026-08-08, against a clean out-of-tree build directory:
+#   * `cmake -S backend -B <fresh dir> -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON`
+#     configures cleanly with the Homebrew dependency set above.
+#   * A full build from scratch succeeded (105/105 targets, exit 0) with the project's
+#     -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror flags.
+#   * `ctest` reported 10/10 passing with arrakis_news_inference_integration recorded as
+#     *Skipped* (not Failed), confirming the exit-77 / SKIP_RETURN_CODE path works.
+#   * arrakis_finbert_smoke_test passed via GTEST_SKIP with the FinBERT env vars unset.
+#
+# NOT VERIFIED — this workflow has never been executed by GitHub Actions:
+#   * That every formula above has a bottle for the current macos-latest image. `brew install`
+#     falling back to a source build (notably for xgboost or onnxruntime) would blow the
+#     45-minute timeout.
+#   * That the runner's Apple Clang version produces no new -Wconversion / -Wshadow diagnostics.
+#     With -Werror, a single new warning on a different compiler version fails the build.
+#   * The `cmake --preset debug` invocations were checked by hand against
+#     backend/CMakePresets.json but not run through the preset path locally.
+#
+# Expect the first run to need a fix. Do not describe this workflow as passing until a green
+# run exists on GitHub. If the Homebrew step proves slow or flaky, the next thing to try is
+# caching /opt/homebrew/Cellar with actions/cache keyed on this file's hash.
+# ---------------------------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 Date string,Article_title,Stock_symbol,Url,Publisher,Author,Article
 2020-01-02 14:00:00,"Chip maker, raises outlook",AAA,https://example.test/a,Wire,,"A short summary"
 2020-01-02 15:00:00,"Duplicate headline",AAA,https://example.test/a,Wire,,
-2020-01-02 20:00:00,"After close",AAA,https://example.test/b,Wire,,
+2020-01-02 23:00:00,"After close",AAA,https://example.test/b,Wire,,
 2020-01-03 14:00:00,"Other company",BBB,https://example.test/c,Wire,,

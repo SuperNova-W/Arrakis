@@ -96,9 +96,10 @@ bars. Set the key in the ignored `.env` file to receive current trades.
 
 The API image includes the XGBoost inference runtime even though the model trainer is disabled in
 the container build. The news recommendation routes remain unavailable, without stopping market
-REST/WebSocket routes, until a verified `artifacts/xlk_news_xgboost.json` artifact is present. The
-repository's older baseline artifacts are not substituted because they do not satisfy the approved
-FinBERT-plus-XGBoost feature contract.
+REST/WebSocket routes, until a verified `artifacts/xlk_news_xgboost.json` artifact is present and
+`ARRAKIS_XLK_NEWS_MODEL_VALIDATED=true` explicitly enables a model that cleared the documented
+walk-forward bar. The repository's older baseline artifacts are not substituted because they do not
+satisfy the approved FinBERT-plus-XGBoost feature contract.
 
 Local endpoints:
 
@@ -151,7 +152,7 @@ For a local Kafka fixture run:
 ```bash
 ./build/local/news-ingestion --fixture tests/fixtures/xlk_news.jsonl
 NEWS_TRADING_DATE=2026-07-28 \
-NEWS_PREDICTION_CUTOFF_UNIX_MS=1785355200000 \
+NEWS_PREDICTION_CUTOFF_UNIX_MS=1785268800000 \
 NEWS_PREDICTION_CUTOFF_ISO=2026-07-28T20:00:00Z \
 ARRAKIS_FINBERT_ONNX_PATH="$PWD/models/finbert/model.onnx" \
 ARRAKIS_FINBERT_VOCAB_PATH="$PWD/models/finbert/vocab.txt" \

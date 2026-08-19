@@ -1,3 +1,5 @@
+#include "arrakis/news/xlk_membership.hpp"
+
 #include <openssl/sha.h>
 
 #include <algorithm>
@@ -12,21 +14,19 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 
 namespace {
-
-struct Holding final {
-    std::string from;
-    std::string to;
-};
 
 struct Options final {
     std::filesystem::path input;
     std::filesystem::path holdings;
     std::filesystem::path output{"data/fnspid/normalized/xlk_articles.csv"};
     std::filesystem::path manifest{"data/fnspid/manifests/import.json"};
+    std::filesystem::path provenance;
+    std::filesystem::path market_history;
     std::string from{"2016-01-01"};
     std::string to{"2023-12-31"};
 };
@@ -116,19 +116,6 @@ struct Options final {
     throw std::runtime_error{"Unsupported FNSPID date format: " + value};
 }
 
-[[nodiscard]] std::string previous_date(const std::string& value) {
-    std::tm parsed{};
-    std::istringstream input{value};
-    input >> std::get_time(&parsed, "%Y-%m-%d");
-    if (input.fail()) throw std::runtime_error{"Invalid holdings date: " + value};
-    const auto timestamp = timegm(&parsed) - 24 * 60 * 60;
-    std::tm output{};
-    gmtime_r(&timestamp, &output);
-    char formatted[11]{};
-    std::strftime(formatted, sizeof(formatted), "%Y-%m-%d", &output);
-    return formatted;
-}
-
 [[nodiscard]] std::string normalize_utc_timestamp(std::string value) {
     value = trim(std::move(value));
     if (value.ends_with(" UTC")) {
@@ -137,6 +124,115 @@ struct Options final {
     }
     if (value.ends_with("Z")) return value;
     return value + "Z";
+}
+
+[[nodiscard]] std::int64_t parse_utc_seconds(const std::string_view value) {
+    if (value.size() < 19) throw std::invalid_argument{"Unsupported FNSPID timestamp: " + std::string{value}};
+    std::tm parsed{};
+    std::istringstream input{std::string{value.substr(0, 19)}};
+    input >> std::get_time(&parsed, "%Y-%m-%d %H:%M:%S");
+    if (input.fail()) throw std::invalid_argument{"Unsupported FNSPID timestamp: " + std::string{value}};
+    return static_cast<std::int64_t>(timegm(&parsed));
+}
+
+[[nodiscard]] std::string date_from_epoch_seconds(const std::int64_t seconds) {
+    const auto time = static_cast<time_t>(seconds);
+    std::tm utc{};
+    gmtime_r(&time, &utc);
+    std::ostringstream output;
+    output << std::setfill('0') << std::setw(4) << utc.tm_year + 1900 << '-'
+           << std::setw(2) << utc.tm_mon + 1 << '-' << std::setw(2) << utc.tm_mday;
+    return output.str();
+}
+
+[[nodiscard]] std::string format_utc(const std::int64_t seconds) {
+    const auto timestamp = static_cast<time_t>(seconds);
+    std::tm utc{};
+    gmtime_r(&timestamp, &utc);
+    std::ostringstream output;
+    output << std::setfill('0') << std::setw(4) << utc.tm_year + 1900 << '-'
+           << std::setw(2) << utc.tm_mon + 1 << '-' << std::setw(2) << utc.tm_mday << ' '
+           << std::setw(2) << utc.tm_hour << ':' << std::setw(2) << utc.tm_min << ':'
+           << std::setw(2) << utc.tm_sec << 'Z';
+    return output.str();
+}
+
+[[nodiscard]] std::int64_t cutoff_epoch_for_session(const std::string_view date) {
+    const auto year = std::stoi(std::string{date.substr(0, 4)});
+    const auto month = std::stoi(std::string{date.substr(5, 2)});
+    const auto day = std::stoi(std::string{date.substr(8, 2)});
+
+    std::tm march{};
+    march.tm_year = year - 1900;
+    march.tm_mon = 2;
+    march.tm_mday = 1;
+    const auto march_epoch = timegm(&march);
+    std::tm march_utc{};
+    gmtime_r(&march_epoch, &march_utc);
+    const auto second_sunday = 1 + ((7 - march_utc.tm_wday) % 7) + 7;
+
+    std::tm november{};
+    november.tm_year = year - 1900;
+    november.tm_mon = 10;
+    november.tm_mday = 1;
+    const auto november_epoch = timegm(&november);
+    std::tm november_utc{};
+    gmtime_r(&november_epoch, &november_utc);
+    const auto first_sunday = 1 + ((7 - november_utc.tm_wday) % 7);
+
+    const bool daylight = (month > 3 && month < 11) ||
+        (month == 3 && day >= second_sunday) ||
+        (month == 11 && day < first_sunday);
+
+    std::tm cutoff{};
+    cutoff.tm_year = year - 1900;
+    cutoff.tm_mon = month - 1;
+    cutoff.tm_mday = day;
+    // 09:20 ET is 13:20 UTC during daylight time and 14:20 UTC otherwise.
+    cutoff.tm_hour = daylight ? 13 : 14;
+    cutoff.tm_min = 20;
+    return static_cast<std::int64_t>(timegm(&cutoff));
+}
+
+struct MarketCalendar final {
+    struct Session final {
+        std::string date;
+        std::int64_t cutoff_epoch{};
+    };
+
+    std::vector<Session> sessions;
+
+    [[nodiscard]] std::string session_for_publication(const std::int64_t published_epoch) const {
+        const auto found = std::ranges::lower_bound(
+            sessions, published_epoch, {}, &Session::cutoff_epoch);
+        if (found == sessions.end()) return {};
+        return found->date;
+    }
+};
+
+[[nodiscard]] MarketCalendar load_market_calendar(const std::filesystem::path& path) {
+    std::ifstream input{path};
+    if (!input) throw std::runtime_error{"Could not open market history: " + path.string()};
+    std::string line;
+    if (!std::getline(input, line)) throw std::runtime_error{"Market history is empty: " + path.string()};
+    MarketCalendar calendar;
+    std::unordered_set<std::string> seen_dates;
+    while (std::getline(input, line)) {
+        if (line.empty()) continue;
+        std::istringstream row{line};
+        std::string symbol;
+        std::string timestamp;
+        if (!std::getline(row, symbol, ',') || !std::getline(row, timestamp, ',')) {
+            throw std::runtime_error{"Malformed market history row"};
+        }
+        const auto date = date_from_epoch_seconds(std::stoll(timestamp));
+        if (seen_dates.insert(date).second) {
+            calendar.sessions.push_back({date, cutoff_epoch_for_session(date)});
+        }
+    }
+    std::ranges::sort(calendar.sessions, {}, &MarketCalendar::Session::cutoff_epoch);
+    if (calendar.sessions.empty()) throw std::runtime_error{"Market history contains no sessions"};
+    return calendar;
 }
 
 [[nodiscard]] Options parse_options(const int argc, char** argv) {
@@ -150,12 +246,16 @@ struct Options final {
         else if (argument == "--holdings") options.holdings = argv[++index];
         else if (argument == "--output") options.output = argv[++index];
         else if (argument == "--manifest") options.manifest = argv[++index];
+        else if (argument == "--provenance") options.provenance = argv[++index];
+        else if (argument == "--market-history") options.market_history = argv[++index];
         else if (argument == "--from") options.from = argv[++index];
         else if (argument == "--to") options.to = argv[++index];
         else if (argument == "--help") {
             std::cout << "Usage: arrakis-import-fnspid --input <csv> --holdings <csv> [options]\n"
                       << "  --output <csv>       Normalized output\n"
                       << "  --manifest <json>    Import accounting manifest\n"
+                      << "  --provenance <csv>   Row-level PIT assignment ledger\n"
+                      << "  --market-history <csv>  Market sessions used for PIT session assignment\n"
                       << "  --from <YYYY-MM-DD>  Inclusive date (default 2016-01-01)\n"
                       << "  --to <YYYY-MM-DD>    Inclusive date (default 2023-12-31)\n";
             std::exit(0);
@@ -163,57 +263,60 @@ struct Options final {
             throw std::invalid_argument{"Unknown option: " + std::string{argument}};
         }
     }
-    if (options.input.empty() || options.holdings.empty()) {
+    if (options.input.empty() || options.holdings.empty() || options.market_history.empty()) {
         throw std::invalid_argument{
-            "--input and --holdings are required; current holdings are never used as a fallback"};
+            "--input, --holdings, and --market-history are required; current holdings are never used as a fallback"};
     }
     return options;
 }
 
-[[nodiscard]] std::map<std::string, std::vector<Holding>> load_holdings(
+// Point-in-time XLK membership.
+//
+// This used to be a per-symbol interval builder that closed each interval at the
+// *next row for the same symbol* and left the last row open on the file's
+// 2099-12-31 sentinel. That made every departure permanent: V, MA, PYPL, ADP,
+// PAYX, FIS, FISV, GPN, BR, JKHY, IPGP, LDOS, PAYC, VNT and XRXDW all last
+// appear in the 2022-12-31 filing (they left XLK in the March 2023 GICS
+// reclassification) yet stayed "held" through 2023 and beyond, which is
+// survivorship/lookahead contamination of the 2023 test year. It also bridged
+// re-entry gaps: CSCO is absent from the four 2021 filings but the old code
+// joined 2020-12-31 straight to 2022-03-31.
+//
+// The correct policy is snapshot-supersedes, and it is already implemented once
+// in arrakis::news::XlkMembershipResolver. This importer links that library
+// rather than keeping a second copy. The resolver also handles the two known
+// physical defects in the shipped CSV explicitly: the file was assembled by
+// concatenation, so it repeats its own header at row 955 (the old code ingested
+// that as a holding for a symbol literally named "symbol") and repeats the first
+// AAPL row at row 956 (identical duplicates are collapsed, conflicting ones
+// throw).
+[[nodiscard]] arrakis::news::XlkMembershipResolver load_holdings(
     const std::filesystem::path& path
 ) {
-    std::ifstream input{path};
-    if (!input) throw std::runtime_error{"Could not open holdings history: " + path.string()};
-    const auto header = read_record(input);
-    if (header.size() < 3 || header[0] != "symbol" || header[1] != "effective_from" ||
-        header[2] != "effective_to") {
-        throw std::runtime_error{
-            "Holdings history must start with symbol,effective_from,effective_to"};
-    }
-    std::map<std::string, std::vector<Holding>> result;
-    for (auto row = read_record(input); !row.empty(); row = read_record(input)) {
-        if (row.size() < 3 || row[0].empty() || row[1].size() < 10 || row[2].size() < 10) {
-            throw std::runtime_error{"Malformed holdings-history row"};
+    auto resolver = arrakis::news::XlkMembershipResolver::from_csv(path);
+    // Fail loudly if the repeated-header row ever leaks through as a constituent
+    // again, and if the file's snapshot structure stops looking like N-PORT
+    // quarter ends.
+    for (const auto& snapshot : resolver.snapshots()) {
+        if (std::ranges::any_of(snapshot.constituents, [](const auto& constituent) {
+                return constituent.symbol == "symbol" ||
+                       constituent.symbol == "effective_from";
+            })) {
+            throw std::runtime_error{
+                "Holdings history header row was ingested as a constituent in snapshot " +
+                snapshot.effective_from};
         }
-        result[row[0]].push_back(Holding{row[1].substr(0, 10), row[2].substr(0, 10)});
-    }
-    if (result.empty()) throw std::runtime_error{"Holdings history is empty"};
-    for (auto& [symbol, rows] : result) {
-        static_cast<void>(symbol);
-        std::ranges::sort(rows, [](const auto& left, const auto& right) {
-            return left.from < right.from;
-        });
-        for (std::size_t index = 0; index + 1 < rows.size(); ++index) {
-            if (rows[index].to == "2099-12-31") rows[index].to = previous_date(rows[index + 1].from);
-            if (rows[index].to >= rows[index + 1].from) {
-                throw std::runtime_error{"Overlapping holdings intervals for " + symbol};
-            }
+        if (snapshot.constituents.size() < 30) {
+            throw std::runtime_error{
+                "Implausibly small XLK snapshot on " + snapshot.effective_from + " (" +
+                std::to_string(snapshot.constituents.size()) + " constituents)"};
         }
     }
-    return result;
-}
-
-[[nodiscard]] bool held_on(
-    const std::map<std::string, std::vector<Holding>>& holdings,
-    const std::string& symbol,
-    const std::string& date
-) {
-    const auto found = holdings.find(symbol);
-    if (found == holdings.end()) return false;
-    return std::ranges::any_of(found->second, [&](const Holding& holding) {
-        return holding.from <= date && date <= holding.to;
-    });
+    std::cout << "Holdings history: " << resolver.snapshots().size() << " quarterly snapshots, "
+              << resolver.first_snapshot_date() << " through " << resolver.last_snapshot_date()
+              << "; membership before the first snapshot is empty and there is no"
+                 " current-holdings fallback\n";
+    return resolver;
 }
 
 }  // namespace
@@ -222,6 +325,7 @@ int main(int argc, char** argv) {
     try {
         const auto options = parse_options(argc, argv);
         const auto holdings = load_holdings(options.holdings);
+        const auto market_calendar = load_market_calendar(options.market_history);
         std::ifstream input{options.input};
         if (!input) throw std::runtime_error{"Could not open FNSPID CSV: " + options.input.string()};
         const auto header = read_record(input);
@@ -247,12 +351,27 @@ int main(int argc, char** argv) {
         std::ofstream output{options.output};
         if (!output) throw std::runtime_error{"Could not write normalized FNSPID output"};
         output << "article_id,published_at_utc,trading_date,symbol,title,summary,url,publisher,content_hash\n";
+        std::ofstream provenance;
+        if (!options.provenance.empty()) {
+            if (!options.provenance.parent_path().empty()) {
+                std::filesystem::create_directories(options.provenance.parent_path());
+            }
+            provenance.open(options.provenance);
+            if (!provenance) throw std::runtime_error{"Could not write FNSPID provenance ledger"};
+            provenance << "article_id,source_date,published_at_utc,assigned_trading_date,"
+                          "session_cutoff_utc,symbol,governing_membership_snapshot,"
+                          "membership_extrapolated,content_hash,identity\n";
+        }
 
         std::size_t rows = 0;
         std::size_t written = 0;
         std::size_t skipped = 0;
         std::size_t duplicates = 0;
         std::size_t missing_timestamp = 0;
+        std::size_t membership_rejects = 0;
+        // Rows whose trading date is at or after the last available N-PORT
+        // snapshot, i.e. resolved against the newest filing carried forward.
+        std::size_t extrapolated = 0;
         std::unordered_set<std::string> seen;
         for (auto row = read_record(input); !row.empty(); row = read_record(input)) {
             ++rows;
@@ -267,13 +386,30 @@ int main(int argc, char** argv) {
                 continue;
             }
             const auto date = date_part(raw_date);
-            if (date < options.from || date > options.to) continue;
+            const auto published_epoch = parse_utc_seconds(raw_date);
             const auto symbol = trim(row[symbol_index]);
             const auto title = trim(row[title_index]);
-            if (symbol.empty() || title.empty() || !held_on(holdings, symbol, date)) {
+            if (symbol.empty() || title.empty()) {
                 ++skipped;
                 continue;
             }
+            const auto trading_date = market_calendar.session_for_publication(published_epoch);
+            if (trading_date.empty() || trading_date < options.from || trading_date > options.to) {
+                ++skipped;
+                continue;
+            }
+            const auto cutoff_epoch = cutoff_epoch_for_session(trading_date);
+            if (published_epoch > cutoff_epoch) {
+                throw std::runtime_error{
+                    "PIT invariant violated: publication is after assigned session cutoff for " +
+                    symbol + " on " + trading_date};
+            }
+            if (!holdings.held_strictly_before(symbol, trading_date)) {
+                ++membership_rejects;
+                ++skipped;
+                continue;
+            }
+            if (trading_date > holdings.last_snapshot_date()) ++extrapolated;
             const auto summary = trim(row[summary_index]);
             const auto content = lower(title + " " + summary);
             const auto content_hash = sha256(content);
@@ -282,11 +418,19 @@ int main(int argc, char** argv) {
                 ++duplicates;
                 continue;
             }
-            const auto article_id = sha256(symbol + "|" + date + "|" + identity);
-            output << article_id << ',' << normalize_utc_timestamp(raw_date) << ',' << date << ',' << symbol << ','
+            const auto article_id = sha256(symbol + "|" + trading_date + "|" + identity);
+            output << article_id << ',' << normalize_utc_timestamp(raw_date) << ',' << trading_date << ',' << symbol << ','
                    << csv_escape(title) << ',' << csv_escape(summary) << ','
                    << csv_escape(trim(row[url_index])) << ',' << csv_escape(trim(row[publisher_index]))
                    << ',' << content_hash << '\n';
+            if (provenance.is_open()) {
+                const auto snapshot = holdings.governing_snapshot_strictly_before(trading_date);
+                provenance << article_id << ',' << date << ',' << normalize_utc_timestamp(raw_date) << ','
+                           << trading_date << ',' << format_utc(cutoff_epoch) << ',' << symbol << ','
+                           << (snapshot.has_value() ? *snapshot : std::string{}) << ','
+                           << (trading_date > holdings.last_snapshot_date() ? "true" : "false") << ','
+                           << content_hash << ',' << csv_escape(identity) << '\n';
+            }
             ++written;
         }
         std::ofstream manifest{options.manifest};
@@ -300,10 +444,24 @@ int main(int argc, char** argv) {
                  << "  \"rows_skipped\": " << skipped << ",\n"
                  << "  \"missing_timestamps\": " << missing_timestamp << ",\n"
                  << "  \"duplicates\": " << duplicates << ",\n"
+                 << "  \"membership_rejects\": " << membership_rejects << ",\n"
                  << "  \"holdings_fallback_used\": false,\n"
-                 << "  \"holdings_interval_policy\": \"snapshot applies from effective_from until the day before the next snapshot\"\n}\n";
+                 << "  \"holdings_snapshots\": " << holdings.snapshots().size() << ",\n"
+                 << "  \"holdings_first_snapshot\": \"" << holdings.first_snapshot_date() << "\",\n"
+                 << "  \"holdings_last_snapshot\": \"" << holdings.last_snapshot_date() << "\",\n"
+                 << "  \"market_history\": \"" << options.market_history.string() << "\",\n"
+                 << "  \"provenance_path\": \"" << options.provenance.string() << "\",\n"
+                 << "  \"session_cutoff_policy\": \"first market session whose 09:20 ET publication cutoff is at or after the source UTC timestamp\",\n"
+                 << "  \"rows_after_last_snapshot\": " << extrapolated << ",\n"
+                 << "  \"holdings_interval_policy\": \"snapshot k is usable only strictly after its "
+                    "effective/availability date for this event-time import; the latest prior "
+                    "snapshot fully supersedes earlier snapshots, including for symbols that leave "
+                    "the fund; effective_to is never used; membership before the first snapshot is "
+                    "empty; the final snapshot is carried forward after its date and counted in "
+                    "rows_after_last_snapshot\"\n}\n";
         std::cout << "FNSPID import complete: " << written << " rows written, " << skipped
-                  << " skipped, " << duplicates << " duplicates\n";
+                  << " skipped, " << duplicates << " duplicates, " << extrapolated
+                  << " written rows resolved against the carried-forward final snapshot\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FNSPID import failed: " << error.what() << '\n';

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,7 +27,7 @@ struct MarketDay final {
     });
     if (current_it == xlk_days.end()) return std::nullopt;
     const auto current_index = static_cast<std::size_t>(std::distance(xlk_days.begin(), current_it));
-    if (current_index < 6) return std::nullopt;
+    if (current_index < 14) return std::nullopt;
 
     const auto spy_current_it = std::find_if(spy_days.begin(), spy_days.end(), [&](const auto& day) {
         return day.date == date;
@@ -50,14 +51,42 @@ struct MarketDay final {
     }
     const double volume_mean = volume_sum / 6.0;
     const double spy_ret_1 = spy_current_it->close / spy_previous_it->close - 1.0;
+    std::vector<double> recent_log_returns;
+    recent_log_returns.reserve(6);
+    for (std::size_t index = current_index - 5; index <= current_index; ++index) {
+        const auto previous_close = xlk_days[index - 1].close;
+        const auto close = xlk_days[index].close;
+        if (previous_close <= 0.0 || close <= 0.0) return std::nullopt;
+        recent_log_returns.push_back(std::log(close / previous_close));
+    }
+    const auto return_mean = std::accumulate(recent_log_returns.begin(), recent_log_returns.end(), 0.0) /
+        static_cast<double>(recent_log_returns.size());
+    double squared_deviation = 0.0;
+    for (const auto item : recent_log_returns) squared_deviation += (item - return_mean) * (item - return_mean);
+    const double volatility_6 = std::sqrt(squared_deviation /
+        static_cast<double>(recent_log_returns.size() - 1));
+
+    double average_gain = 0.0;
+    double average_loss = 0.0;
+    for (std::size_t index = current_index - 13; index <= current_index; ++index) {
+        const auto change = xlk_days[index].close - xlk_days[index - 1].close;
+        average_gain += std::max(0.0, change);
+        average_loss += std::max(0.0, -change);
+    }
+    average_gain /= 14.0;
+    average_loss /= 14.0;
+    const double rsi_14 = average_loss == 0.0
+        ? (average_gain == 0.0 ? 50.0 : 100.0)
+        : 100.0 - (100.0 / (1.0 + average_gain / average_loss));
+
     return std::vector<double>{
         ret_1,
         ret_3,
         ret_6,
-        std::sqrt(std::abs(ret_6)),
+        volatility_6,
         volume_mean,
         current.volume / std::max(1.0, volume_mean),
-        std::clamp(50.0 + 10.0 * ret_1, 0.0, 100.0),
+        rsi_14,
         spy_ret_1,
         ret_1 - spy_ret_1};
 }

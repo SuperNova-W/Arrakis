@@ -22,6 +22,15 @@ namespace {
 std::string env(const char* name, std::string fallback = {}) { const char* value = std::getenv(name); return value == nullptr ? std::move(fallback) : std::string(value); }
 std::int64_t env_int(const char* name, std::int64_t fallback) { const auto value = env(name); return value.empty() ? fallback : std::stoll(value); }
 bool contains(const std::vector<std::string>& values, std::string_view target) { for (const auto& value : values) if (value == target) return true; return false; }
+// Train/serve parity: build_xlk_combined_dataset marks every training article
+// entity_weight=1.0, holding_related=true, sector_related=true, macro_related=false,
+// because each one is by construction a point-in-time XLK constituent article.
+// The live path must classify the same way, so an article counts as holding-related
+// exactly when news-ingestion tagged it with a resolved constituent.
+bool has_company_entity(const std::vector<std::string>& values) {
+    for (const auto& value : values) if (value.starts_with("company:")) return true;
+    return false;
+}
 std::string embedding_json(const std::vector<double>& values) { boost::json::array output; for (const auto value : values) output.push_back(value); return boost::json::serialize(output); }
 struct PredictionWindow final {
     std::int64_t cutoff_unix_ms{};
@@ -71,6 +80,12 @@ int main() {
         arrakis::news::FinbertSession finbert(env("ARRAKIS_FINBERT_ONNX_PATH"), env("ARRAKIS_FINBERT_VOCAB_PATH"), env("ARRAKIS_FINBERT_VERSION", "finbert-v1"), env("ARRAKIS_FINBERT_TOKENIZER_VERSION", "finbert-tokenizer-v1"), static_cast<std::size_t>(std::stoul(env("ARRAKIS_FINBERT_MAX_TOKENS", "128"))));
         arrakis::streaming::KafkaConsumer consumer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), env("NEWS_CONSUMER_GROUP", "news-enricher-v1"), env("NEWS_RAW_TOPIC", "news.raw.articles"));
         arrakis::streaming::KafkaProducer producer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), "news-enricher-v1");
+        // Inclusive lower bound on publication time, matching the one-day
+        // grouping the batch dataset builder uses. Without it the aggregate
+        // spans the whole NEWS_POLL_LOOKBACK_DAYS republication window and
+        // article_count is inflated several-fold against the trained schema.
+        // 0 preserves the previous unbounded behaviour.
+        const auto window_start = env_int("NEWS_PREDICTION_WINDOW_START_UNIX_MS", 0);
         const auto configured_cutoff = env_int("NEWS_PREDICTION_CUTOFF_UNIX_MS", 0);
         const auto configured_date = env("NEWS_TRADING_DATE");
         const auto configured_cutoff_iso = env("NEWS_PREDICTION_CUTOFF_ISO");
@@ -89,7 +104,7 @@ int main() {
                     aggregate_date = window.trading_date;
                 }
                 const auto article = arrakis::news::deserialize_article(record->payload);
-                if (article.published_at_unix_ms > window.cutoff_unix_ms || !contains(article.entity_ids, "XLK")) { consumer.commit(*record); continue; }
+                if (article.published_at_unix_ms > window.cutoff_unix_ms || article.published_at_unix_ms < window_start || !contains(article.entity_ids, "XLK")) { consumer.commit(*record); continue; }
                 const auto outputs = finbert.infer({article.headline + "\n" + article.body});
                 if (outputs.size() != 1) throw std::runtime_error("FinBERT returned an unexpected batch size");
                 const auto& output = outputs.front();
@@ -97,8 +112,8 @@ int main() {
                 database.persist_news_article(database_article, article.normalized_content_hash, "{\"provider\":\"approved-source\"}");
                 database.persist_news_entities(article.article_id, article.entity_ids);
                 database.persist_news_features(article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, embedding_json(output.pooled_embedding), "xlk-news-features-v1", 0.0);
-                aggregate.push_back({article, {article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms}, 1.0, contains(article.entity_ids, "company:MSFT") || contains(article.entity_ids, "company:NVDA"), contains(article.entity_ids, "macro:rates") || contains(article.entity_ids, "macro:inflation"), contains(article.entity_ids, "sector:technology") || contains(article.entity_ids, "sector:semiconductors")});
-                const auto daily = arrakis::news::aggregate_daily(window.trading_date, window.cutoff_unix_ms, aggregate);
+                aggregate.push_back({article, {article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms}, 1.0, has_company_entity(article.entity_ids), false, true});
+                const auto daily = arrakis::news::aggregate_daily(window.trading_date, window.cutoff_unix_ms, aggregate, window_start);
                 const auto xlk_bars = database.daily_market_bars("XLK", window.cutoff_unix_ms);
                 const auto spy_bars = database.daily_market_bars("SPY", window.cutoff_unix_ms);
                 std::vector<arrakis::news::MarketDay> xlk_days;

@@ -58,4 +58,21 @@ struct DatasetThreeWaySplit final {
     const std::string& test_end
 );
 
+// Returns the inclusive date range without changing row or feature order.
+// The dataset must contain at least one row in the requested range.
+[[nodiscard]] Dataset date_slice(
+    const Dataset& dataset,
+    const std::string& begin,
+    const std::string& end
+);
+
+// Returns the half-open row interval [begin, end) without changing ordering.
+// This is used by purged walk-forward folds where calendar boundaries alone do
+// not express the exact number of rows to exclude from a label horizon.
+[[nodiscard]] Dataset row_slice(
+    const Dataset& dataset,
+    std::size_t begin,
+    std::size_t end
+);
+
 }  // namespace arrakis::model
