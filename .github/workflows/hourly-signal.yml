@@ -67,6 +67,13 @@ jobs:
     container:
       image: debian:bookworm
 
+    # Actions defaults container jobs to `sh` (dash) rather than bash, and
+    # every step below relies on `set -euo pipefail` plus bash-only syntax.
+    # dash doesn't support -o pipefail and fails the very first step.
+    defaults:
+      run:
+        shell: bash
+
     services:
       # Kafka stays ephemeral. Each run republishes the lookback window, so a
       # fresh broker per job loses nothing; the durable record is in Supabase.
