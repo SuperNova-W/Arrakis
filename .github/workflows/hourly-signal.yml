@@ -187,6 +187,11 @@ jobs:
           curl -fsSL "$url" -o /tmp/ort.tgz
           mkdir -p /tmp/ort && tar -xzf /tmp/ort.tgz -C /tmp/ort --strip-components=1
           cp -r /tmp/ort/include/* /usr/local/include/
+          # The packaged onnxruntimeTargets.cmake's INTERFACE_INCLUDE_DIRECTORIES
+          # points at include/onnxruntime/, not a flat include/ -- the tarball's
+          # own layout doesn't nest headers that way, so recreate it.
+          mkdir -p /usr/local/include/onnxruntime
+          cp -r /tmp/ort/include/* /usr/local/include/onnxruntime/
           cp -r /tmp/ort/lib/*      /usr/local/lib/
           [ -e /usr/local/lib64 ] || ln -s /usr/local/lib /usr/local/lib64
           ldconfig
