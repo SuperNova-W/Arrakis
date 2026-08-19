@@ -78,13 +78,22 @@ DO $$
 BEGIN
   -- Grant the published views only. research_signals itself stays revoked, and
   -- no other table becomes reachable.
+  -- Supabase's project-level default privileges auto-grant ALL on newly
+  -- created relations to anon/authenticated, so CREATE OR REPLACE VIEW above
+  -- may already have handed out INSERT/UPDATE/DELETE/TRUNCATE. GRANT SELECT
+  -- alone only adds to that; it does not strip it. REVOKE ALL first, on the
+  -- views too, so the two views end up SELECT-only exactly like the table.
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     REVOKE ALL ON TABLE research_signals FROM anon;
+    REVOKE ALL ON public_research_signal_latest FROM anon;
+    REVOKE ALL ON public_research_signal_runs FROM anon;
     GRANT SELECT ON public_research_signal_latest TO anon;
     GRANT SELECT ON public_research_signal_runs TO anon;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
     REVOKE ALL ON TABLE research_signals FROM authenticated;
+    REVOKE ALL ON public_research_signal_latest FROM authenticated;
+    REVOKE ALL ON public_research_signal_runs FROM authenticated;
     GRANT SELECT ON public_research_signal_latest TO authenticated;
     GRANT SELECT ON public_research_signal_runs TO authenticated;
   END IF;
