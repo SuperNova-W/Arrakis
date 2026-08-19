@@ -113,7 +113,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config ccache git curl ca-certificates jq tzdata \
             libboost-json1.81-dev libssl-dev libprotobuf-dev protobuf-compiler \
-            libabsl-dev librdkafka-dev libpq-dev libxgboost-dev \
+            libabsl-dev librdkafka-dev libpq-dev libxgboost-dev xgboost \
             postgresql-client
           rm -rf /var/lib/apt/lists/*
 
