@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -150,6 +151,103 @@ using tcp = asio::ip::tcp;
     return response.body();
 }
 
+[[nodiscard]] std::int64_t json_integer(const boost::json::value& value) {
+    if (value.is_int64()) return value.as_int64();
+    if (value.is_uint64()) return static_cast<std::int64_t>(value.as_uint64());
+    throw std::runtime_error{"Expected an integer in market-data response"};
+}
+
+[[nodiscard]] double json_number_or_nan(const boost::json::value& value) {
+    if (value.is_double()) return value.as_double();
+    if (value.is_int64()) return static_cast<double>(value.as_int64());
+    if (value.is_uint64()) return static_cast<double>(value.as_uint64());
+    if (value.is_null()) return std::numeric_limits<double>::quiet_NaN();
+    throw std::runtime_error{"Expected a number in market-data response"};
+}
+
+[[nodiscard]] std::vector<std::int64_t> parse_integer_array(const boost::json::value& source) {
+    std::vector<std::int64_t> output;
+    if (!source.is_array()) return output;
+    output.reserve(source.as_array().size());
+    for (const auto& item : source.as_array()) output.push_back(json_integer(item));
+    return output;
+}
+
+[[nodiscard]] std::vector<double> parse_number_array(const boost::json::value& source) {
+    std::vector<double> output;
+    if (!source.is_array()) return output;
+    output.reserve(source.as_array().size());
+    for (const auto& item : source.as_array()) output.push_back(json_number_or_nan(item));
+    return output;
+}
+
+[[nodiscard]] CandleResponse parse_finnhub_candle_response(std::string_view body) {
+    CandleResponse response;
+    const auto value = boost::json::parse(body);
+    if (!value.is_object()) {
+        response.status = "invalid";
+        return response;
+    }
+
+    const auto& object = value.as_object();
+    response.status = safe_string(value, "s");
+    if (response.status.empty()) response.status = "ok";
+
+    if (const auto it = object.find("t"); it != object.end()) response.timestamps = parse_integer_array(it->value());
+    if (const auto it = object.find("o"); it != object.end()) response.opens = parse_number_array(it->value());
+    if (const auto it = object.find("h"); it != object.end()) response.highs = parse_number_array(it->value());
+    if (const auto it = object.find("l"); it != object.end()) response.lows = parse_number_array(it->value());
+    if (const auto it = object.find("c"); it != object.end()) response.closes = parse_number_array(it->value());
+    if (const auto it = object.find("v"); it != object.end()) response.volumes = parse_number_array(it->value());
+    return response;
+}
+
+[[nodiscard]] CandleResponse parse_yahoo_chart_response(std::string_view body) {
+    const auto value = boost::json::parse(body);
+    const auto* root = value.if_object();
+    if (root == nullptr) {
+        throw std::runtime_error{"Yahoo Finance response is missing chart data"};
+    }
+    const auto chart_it = root->find("chart");
+    if (chart_it == root->end() || !chart_it->value().is_object()) {
+        throw std::runtime_error{"Yahoo Finance response is missing chart data"};
+    }
+
+    const auto& chart = chart_it->value().as_object();
+    const auto result_it = chart.find("result");
+    if (result_it == chart.end() || !result_it->value().is_array() || result_it->value().as_array().empty() ||
+        !result_it->value().as_array().front().is_object()) {
+        throw std::runtime_error{"Yahoo Finance response contains no chart result"};
+    }
+
+    const auto& result = result_it->value().as_array().front().as_object();
+    CandleResponse response;
+    response.provider = "yahoo-finance";
+    response.status = "ok";
+
+    if (const auto it = result.find("timestamp"); it != result.end()) {
+        response.timestamps = parse_integer_array(it->value());
+    }
+
+    const auto indicators_it = result.find("indicators");
+    if (indicators_it == result.end() || !indicators_it->value().is_object()) {
+        throw std::runtime_error{"Yahoo Finance response is missing indicators"};
+    }
+    const auto& indicators = indicators_it->value().as_object();
+    const auto quote_it = indicators.find("quote");
+    if (quote_it == indicators.end() || !quote_it->value().is_array() || quote_it->value().as_array().empty() ||
+        !quote_it->value().as_array().front().is_object()) {
+        throw std::runtime_error{"Yahoo Finance response is missing quote data"};
+    }
+    const auto& quote = quote_it->value().as_array().front().as_object();
+    if (const auto it = quote.find("open"); it != quote.end()) response.opens = parse_number_array(it->value());
+    if (const auto it = quote.find("high"); it != quote.end()) response.highs = parse_number_array(it->value());
+    if (const auto it = quote.find("low"); it != quote.end()) response.lows = parse_number_array(it->value());
+    if (const auto it = quote.find("close"); it != quote.end()) response.closes = parse_number_array(it->value());
+    if (const auto it = quote.find("volume"); it != quote.end()) response.volumes = parse_number_array(it->value());
+    return response;
+}
+
 }  // namespace
 
 FinnhubClient::FinnhubClient(FinnhubClientConfig config) : config_(std::move(config)) {
@@ -207,56 +305,29 @@ CandleResponse FinnhubClient::get_candles(
     target << "/stock/candle?symbol=" << symbol << "&resolution=" << resolution
            << "&from=" << from_seconds << "&to=" << to_seconds << "&token=" << config_.api_key;
 
-    const auto body = fetch_http_body("finnhub.io", target.str(), std::chrono::seconds{config_.request_timeout_seconds});
-    CandleResponse response;
-    const auto value = boost::json::parse(body);
-    if (!value.is_object()) {
-        response.status = "invalid";
-        return response;
-    }
+    try {
+        const auto body = fetch_http_body("finnhub.io", target.str(), std::chrono::seconds{config_.request_timeout_seconds});
+        return parse_finnhub_candle_response(body);
+    } catch (const std::exception& finnhub_error) {
+        // The Finnhub key used by the deployed news path does not grant access
+        // to /stock/candle on the free plan. Daily bars are also available from
+        // Yahoo's public chart endpoint, so keep the required Finnhub path for
+        // environments that have candle access and use a clearly labelled
+        // fallback for the scheduled research pipeline.
+        if (resolution != "D" && resolution != "1D") throw;
 
-    const auto& object = value.as_object();
-    response.status = safe_string(object, "s");
-    if (response.status.empty()) {
-        response.status = "ok";
-    }
-
-    const auto parse_array = [](const boost::json::value& source, std::vector<std::int64_t>& output) {
-        if (!source.is_array()) {
-            return;
+        std::ostringstream yahoo_target;
+        yahoo_target << "/v8/finance/chart/" << symbol << "?period1=" << from_seconds << "&period2=" << to_seconds
+                     << "&interval=1d&events=history&includeAdjustedClose=true";
+        try {
+            const auto yahoo_body = fetch_http_body(
+                "query1.finance.yahoo.com", yahoo_target.str(), std::chrono::seconds{config_.request_timeout_seconds});
+            return parse_yahoo_chart_response(yahoo_body);
+        } catch (const std::exception& yahoo_error) {
+            throw std::runtime_error{"Finnhub daily candles failed (" + std::string{finnhub_error.what()} +
+                                     "); Yahoo Finance fallback failed (" + std::string{yahoo_error.what()} + ")"};
         }
-        for (const auto& item : source.as_array()) {
-            output.push_back(static_cast<std::int64_t>(item.as_int64()));
-        }
-    };
-    const auto parse_double_array = [](const boost::json::value& source, std::vector<double>& output) {
-        if (!source.is_array()) {
-            return;
-        }
-        for (const auto& item : source.as_array()) {
-            output.push_back(item.as_double());
-        }
-    };
-
-    if (const auto it = object.find("t"); it != object.end()) {
-        parse_array(it->value(), response.timestamps);
     }
-    if (const auto it = object.find("o"); it != object.end()) {
-        parse_double_array(it->value(), response.opens);
-    }
-    if (const auto it = object.find("h"); it != object.end()) {
-        parse_double_array(it->value(), response.highs);
-    }
-    if (const auto it = object.find("l"); it != object.end()) {
-        parse_double_array(it->value(), response.lows);
-    }
-    if (const auto it = object.find("c"); it != object.end()) {
-        parse_double_array(it->value(), response.closes);
-    }
-    if (const auto it = object.find("v"); it != object.end()) {
-        parse_double_array(it->value(), response.volumes);
-    }
-    return response;
 }
 
 std::vector<NewsStory> FinnhubClient::get_company_news(std::string_view symbol, std::string_view from_date, std::string_view to_date) {
@@ -388,9 +459,11 @@ ChunkManifest write_manifest(
     const RequestWindow& window,
     const std::vector<MarketBar>& bars,
     const std::string& response_status,
-    const std::filesystem::path& output_dir
+    const std::filesystem::path& output_dir,
+    std::string provider
 ) {
     ChunkManifest manifest;
+    manifest.provider = std::move(provider);
     manifest.symbol = symbol;
     manifest.resolution = resolution;
     manifest.requested_start_utc = to_iso(window.start);

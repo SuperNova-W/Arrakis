@@ -21,6 +21,7 @@ struct MarketBar final {
 
 struct CandleResponse final {
     std::string status;
+    std::string provider{"finnhub"};
     std::vector<std::int64_t> timestamps;
     std::vector<double> opens;
     std::vector<double> highs;
@@ -144,7 +145,8 @@ class FinnhubClient final {
     const RequestWindow& window,
     const std::vector<MarketBar>& bars,
     const std::string& response_status,
-    const std::filesystem::path& output_dir
+    const std::filesystem::path& output_dir,
+    std::string provider = "finnhub"
 );
 
 [[nodiscard]] std::string serialize_manifest(const ChunkManifest& manifest);

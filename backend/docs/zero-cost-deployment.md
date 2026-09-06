@@ -32,6 +32,13 @@ Vercel static frontend ── anon key ──→ public_research_signal_latest �
 
 Nothing runs between jobs. Kafka is created and destroyed inside each run.
 
+`fetch-historical-data` requests daily candles from Finnhub when the deployment
+has access to that endpoint. The deployed free-tier key is valid for Finnhub
+news but not `/stock/candle`, so the executable falls back to Yahoo Finance's
+public daily chart response and records `provider: "yahoo-finance"` in the
+manifest. This keeps the daily feature path live without presenting the
+fallback as a Finnhub delivery guarantee.
+
 ### Why Supabase is the pipeline's database, not an ephemeral container
 
 The news corpus, daily bars and feature history must accumulate across runs.

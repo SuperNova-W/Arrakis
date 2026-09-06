@@ -68,7 +68,7 @@ int main(int argc, char* argv[]) {
         const auto output_path = std::filesystem::path{output_dir};
         const auto csv_path = write_csv_chunk(symbol, validated, output_path);
         const auto window = RequestWindow{from, to};
-        const auto manifest = write_manifest(symbol, resolution, window, validated, candles.status, output_path);
+        const auto manifest = write_manifest(symbol, resolution, window, validated, candles.status, output_path, candles.provider);
 
         std::cout << "Wrote " << validated.size() << " bars to " << csv_path << '\n';
         std::cout << "Manifest: " << manifest.symbol << " rows=" << manifest.row_count << " status=" << manifest.response_status << '\n';
