@@ -22,8 +22,6 @@ import { calculateStatistics } from './finnhub/indicators'
 import { clearFinnhubKey, configuredFinnhubKey, saveFinnhubKey } from './finnhub/key'
 import { useFinnhubProfile, useFinnhubQuote, useIndicators } from './finnhub/hooks'
 import type { Candle, ChartRange, ChartStyle, IndicatorKey } from './finnhub/types'
-import { useLiveMarket } from './liveMarket/hooks'
-import type { ConnectionStatus, LiveTrade } from './liveMarket/types'
 import { TwelveDataError } from './twelveData/client'
 import { useTwelveDataCandles } from './twelveData/hooks'
 import { twelveDataRangeRequest } from './twelveData/ranges'
@@ -82,19 +80,6 @@ function marketStatus() {
   const clock = hour * 60 + minute
   const open = !['Sat', 'Sun'].includes(weekday) && clock >= 570 && clock < 960
   return open ? 'Market open' : 'Market closed'
-}
-
-function liveStatusLabel(status: ConnectionStatus, hasTrade: boolean) {
-  if (status === 'connecting') return 'Connecting'
-  if (status === 'reconnecting') return 'Reconnecting'
-  if (status === 'offline') return 'Offline'
-  return hasTrade ? 'Live' : 'Connected · waiting for data'
-}
-
-function hasRecentLiveTrade(trade: LiveTrade | null) {
-  if (!trade) return false
-  const timestamp = Date.parse(trade.timestamp)
-  return Number.isFinite(timestamp) && Date.now() - timestamp <= 120_000
 }
 
 function Shell({ children, onConfigure }: { children: React.ReactNode; onConfigure: () => void }) {
@@ -236,6 +221,27 @@ function visibleCandles(candles: Candle[], range: ChartRange, extendedHours: boo
   return visible.filter(candle => allowedDates.has(easternClock.format(candle.time * 1000).slice(0, 10)))
 }
 
+function currentMarketDate() {
+  const parts = Object.fromEntries(easternClock.formatToParts(new Date()).map(part => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+type BatchInferenceStatus = {
+  tone: 'checking' | 'available' | 'gated' | 'unavailable'
+  label: string
+}
+
+function batchInferenceStatus(state: ReturnType<typeof useMlRecommendation>): BatchInferenceStatus {
+  const document = state.news.data ?? state.prediction.data
+  if (state.loading) return { tone: 'checking', label: 'Checking' }
+  if (!document) return { tone: 'unavailable', label: 'No published run' }
+  if (document.prediction) return { tone: 'available', label: `${document.prediction.direction} · ${document.date}` }
+  if (state.prediction.error?.code === 'NO_VALIDATED_MODEL') {
+    return { tone: 'gated', label: `No validated model · ${document.date}` }
+  }
+  return { tone: 'gated', label: `Published · ${document.date}` }
+}
+
 function ETFDetail({ apiKey }: { apiKey: string }) {
   const symbol = window.location.pathname.split('/')[2]?.toUpperCase() ?? ''
   const definition = findEtf(symbol)
@@ -248,7 +254,8 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
   const candles = useTwelveDataCandles(symbol, range, TWELVE_DATA_API_KEY)
   const profile = useFinnhubProfile(symbol, apiKey)
   const comparison = useTwelveDataCandles(benchmark, range, TWELVE_DATA_API_KEY)
-  const liveMarket = useLiveMarket(definition?.symbol ?? '')
+  const batchInference = useMlRecommendation(currentMarketDate(), symbol, true)
+  const batchStatus = batchInferenceStatus(batchInference)
   const rangeRequest = twelveDataRangeRequest(range)
   const displayedCandles = useMemo(() => visibleCandles(candles.data ?? [], range, extendedHours), [candles.data, range, extendedHours])
   const displayedComparison = useMemo(() => visibleCandles(comparison.data ?? [], range, extendedHours), [comparison.data, range, extendedHours])
@@ -284,7 +291,7 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
           <div><div className="eyebrow">{profile.data?.exchange ?? 'US ETF'} · {profile.data?.currency ?? 'USD'}</div><h2>{definition.name}</h2><div className="quote-line"><strong>{formatPrice(quote.data?.current ?? candles.data?.at(-1)?.close)}</strong>{quote.data && <span className={quote.data.change >= 0 ? 'positive' : 'negative'}>{quote.data.change >= 0 ? '+' : ''}{quote.data.change.toFixed(2)} ({formatPercent(quote.data.changePercent)})</span>}</div><small>{marketStatus()} · quote {formatTimestamp(quote.data?.timestamp)}</small></div>
         </div>
         <div className="viewer-header-actions">
-          <div className={`live-status status-${liveMarket.status}`} title={`Backend inference feed (market-api WebSocket): ${liveStatusLabel(liveMarket.status, hasRecentLiveTrade(liveMarket.lastTrade))}`} aria-live="polite"><WifiOff size={13}/><span>Inference feed · {liveStatusLabel(liveMarket.status, hasRecentLiveTrade(liveMarket.lastTrade))}</span></div>
+          <div className={`batch-status status-${batchStatus.tone}`} title={`Batch inference via Supabase research output: ${batchStatus.label}`} aria-live="polite"><Database size={13}/><span>Batch inference · {batchStatus.label}</span></div>
           <div className="range-tabs large" aria-label="Chart range">{RANGES.map(option => <button key={option} className={range === option ? 'active' : ''} onClick={() => setRange(option)}>{option}</button>)}</div>
         </div>
       </div>

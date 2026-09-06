@@ -32,14 +32,15 @@ main{margin-left:0;width:100%;max-width:1600px;margin-right:auto;padding:96px 30
 .extended-hours-control{display:flex;align-items:center;gap:6px;color:#617583;font-size:9px;white-space:nowrap}.extended-hours-control input{accent-color:#23775f}
 
 .viewer-header-actions{display:grid;justify-items:end;gap:10px}
-.live-status{display:inline-flex;align-items:center;gap:6px;border:1px solid #d6e0e5;border-radius:999px;padding:5px 9px;background:#f7fafb;color:#647985;font-size:9px;font-weight:650;white-space:nowrap}
-.live-status svg{color:#81949d}
-.live-status.status-connecting,.live-status.status-reconnecting{color:#806f48;border-color:#eadcb7;background:#fffaf0}
-.live-status.status-connecting svg,.live-status.status-reconnecting svg{color:#b58324}
-.live-status.status-live{color:#176249;border-color:#c9e2d7;background:#eff9f4}
-.live-status.status-live svg{color:#16845f}
-.live-status.status-offline{color:#8c3434;border-color:#edcccc;background:#fff4f4}
-.live-status.status-offline svg{color:#c54c4c}
+.batch-status{display:inline-flex;align-items:center;gap:6px;border:1px solid #d6e0e5;border-radius:999px;padding:5px 9px;background:#f7fafb;color:#647985;font-size:9px;font-weight:650;white-space:nowrap}
+.batch-status svg{color:#81949d}
+.batch-status.status-checking{color:#806f48;border-color:#eadcb7;background:#fffaf0}
+.batch-status.status-checking svg{color:#b58324}
+.batch-status.status-available{color:#176249;border-color:#c9e2d7;background:#eff9f4}
+.batch-status.status-available svg{color:#16845f}
+.batch-status.status-gated{color:#806f48;border-color:#eadcb7;background:#fffaf0}
+.batch-status.status-gated svg{color:#b58324}
+.batch-status.status-unavailable{color:#647985;border-color:#d6e0e5;background:#f7fafb}
 @media(max-width:1000px){.viewer-header-actions{justify-items:start}}
 .recommendation-layout{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}.recommendation-layout>.panel{padding:18px}.recommendation-layout .insight-panel{min-height:280px}.recommendation-layout .news-panel{min-height:280px}.recommendation-layout .research-only-note{grid-column:1/-1;display:flex;gap:10px;align-items:flex-start}.research-only-note>svg{color:#16845f;flex:none}.research-only-note b{font-size:10px}.research-only-note p{font-size:10px;color:#71818d;margin:4px 0 0}.news-list{display:grid;margin-top:12px}.news-item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;border-top:1px solid #e3e9ee;padding:10px 0}.news-item>div{display:grid;gap:4px}.news-item b{font-size:10px;line-height:1.4;color:#294252}.news-item small{font-size:8px;color:#7b8b95}.news-item>span{font-size:8px;font-weight:700;white-space:nowrap}.news-item>span.positive{color:#16845f}.news-item>span.negative{color:#c84d4d}.signal-pill.bullish{background:#e5f5ee;color:#16845f}.signal-pill.bearish{background:#fdebec;color:#c84d4d}.signal-pill.neutral{background:#fff6df;color:#9a711c}
 @media(max-width:600px){.recommendation-layout{grid-template-columns:1fr}.recommendation-layout .research-only-note{grid-column:auto}}

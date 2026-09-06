@@ -112,7 +112,7 @@ interface SignalRow {
   document: MlPayload
 }
 
-async function fetchDocument(date: string, signal: AbortSignal): Promise<MlPayload> {
+async function fetchDocument(date: string, symbol: string, signal: AbortSignal, latest: boolean): Promise<MlPayload> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw new MlApiError('Date must be formatted YYYY-MM-DD.', 'INVALID_DATE')
   }
@@ -124,11 +124,12 @@ async function fetchDocument(date: string, signal: AbortSignal): Promise<MlPaylo
   }
 
   const query = new URLSearchParams({
-    symbol: 'eq.XLK',
-    trading_date: `eq.${date}`,
+    symbol: `eq.${symbol}`,
+    trading_date: latest ? `lte.${date}` : `eq.${date}`,
     select: 'trading_date,generated_at,run_kind,model_validated,document',
     limit: '1',
   })
+  if (latest) query.set('order', 'trading_date.desc,generated_at.desc')
   const response = await fetch(`${SUPABASE_URL}/rest/v1/public_research_signal_latest?${query}`, {
     signal,
     headers: {
@@ -151,7 +152,9 @@ async function fetchDocument(date: string, signal: AbortSignal): Promise<MlPaylo
   const row = Array.isArray(rows) ? rows[0] : undefined
   if (!row) {
     throw new MlApiError(
-      `No research document has been published for ${date}. Documents are generated on trading days only.`,
+      latest
+        ? `No research document has been published on or before ${date} for ${symbol}.`
+        : `No research document has been published for ${date}. Documents are generated on trading days only.`,
       'FEATURES_UNAVAILABLE',
       404,
     )
@@ -180,12 +183,14 @@ function toError(error: unknown): MlApiError {
 }
 
 /**
- * Loads the most recent published research document for `date` and projects it
- * onto the three slots the UI expects. The prediction slot carries an error
- * whenever the document has no prediction -- which is the normal state while the
- * model gate is closed, and is what drives the "No validated model" panel.
+ * Loads a published research document and projects it onto the three slots the
+ * UI expects. With `latest` enabled, it returns the most recent document on or
+ * before `date`, which lets ETF detail pages show the last batch run on
+ * weekends and holidays. The prediction slot carries an error whenever the
+ * document has no prediction, which is the normal state while the model gate
+ * is closed and is what drives the "No validated model" panel.
  */
-export function useMlRecommendation(date: string): MlState {
+export function useMlRecommendation(date: string, symbol = 'XLK', latest = false): MlState {
   const [refreshKey, setRefreshKey] = useState(0)
   const [state, setState] = useState<Omit<MlState, 'refresh'>>({
     loading: true,
@@ -200,7 +205,7 @@ export function useMlRecommendation(date: string): MlState {
 
     void (async () => {
       try {
-        const document = await fetchDocument(date, controller.signal)
+        const document = await fetchDocument(date, symbol, controller.signal, latest)
         if (cancelled || controller.signal.aborted) return
         const populated: EndpointState = { data: document, error: null }
         const prediction: EndpointState = document.prediction
@@ -223,7 +228,7 @@ export function useMlRecommendation(date: string): MlState {
     })()
 
     return () => { cancelled = true; controller.abort() }
-  }, [date, refreshKey])
+  }, [date, latest, refreshKey, symbol])
 
   return { ...state, refresh: () => setRefreshKey(value => value + 1) }
 }
