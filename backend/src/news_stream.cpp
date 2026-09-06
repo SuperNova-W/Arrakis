@@ -169,6 +169,8 @@ int main(int argc, char** argv) {
         arrakis::streaming::KafkaProducer producer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), "news-ingestion-v1");
         if (env("ARRAKIS_KAFKA_CREATE_TOPICS") == "true") {
             producer.ensure_topic(env("NEWS_RAW_TOPIC", "news.raw.articles"));
+            producer.ensure_topic(env("MARKET_RAW_TOPIC", "market.raw.trades"));
+            producer.ensure_topic(env("NEWS_ENRICHED_TOPIC", "news.enriched.features"));
         }
         std::uint64_t published = 0;
         std::unordered_set<std::string> published_ids;
