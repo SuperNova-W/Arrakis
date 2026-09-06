@@ -25,7 +25,14 @@ rd_kafka_conf_t* config(std::string_view brokers, std::string_view client, bool 
     auto set = [&](const char* key, const char* value) { if (rd_kafka_conf_set(conf, key, value, error, sizeof(error)) != RD_KAFKA_CONF_OK) throw std::runtime_error(std::string("Kafka config ") + key + ": " + error); };
     set("bootstrap.servers", std::string(brokers).c_str()); set("client.id", std::string(client).c_str());
     if (producer) { set("acks", "all"); set("enable.idempotence", "true"); set("compression.type", "zstd"); set("delivery.timeout.ms", "30000"); set("retries", "10"); rd_kafka_conf_set_dr_msg_cb(conf, delivery_report); }
-    else { set("enable.auto.commit", "false"); set("auto.offset.reset", "earliest"); }
+    else {
+        set("enable.auto.commit", "false");
+        set("auto.offset.reset", "earliest");
+        // A scheduled batch can legitimately have no eligible news. Allow the
+        // consumer to subscribe to the broker-created raw topic in that case;
+        // the enricher's one-shot mode will persist an empty feature vector.
+        set("allow.auto.create.topics", "true");
+    }
     return conf;
 }
 }

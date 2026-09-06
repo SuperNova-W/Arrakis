@@ -365,6 +365,8 @@ jobs:
           NEWS_PREDICTION_CUTOFF_UNIX_MS: ${{ steps.window.outputs.cutoff_ms }}
           NEWS_PREDICTION_CUTOFF_ISO: ${{ steps.window.outputs.cutoff_iso }}
           NEWS_PREDICTION_WINDOW_START_UNIX_MS: ${{ steps.window.outputs.window_start_ms }}
+          NEWS_ENRICHER_ONCE: 'true'
+          NEWS_ENRICHER_IDLE_POLLS: '10'
         run: |
           set -uo pipefail
           timeout --signal=INT 900 ./build/ci/news-enricher 2>&1 | tee /tmp/enrich.log || true

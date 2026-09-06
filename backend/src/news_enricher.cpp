@@ -90,11 +90,47 @@ int main() {
         const auto configured_date = env("NEWS_TRADING_DATE");
         const auto configured_cutoff_iso = env("NEWS_PREDICTION_CUTOFF_ISO");
         const bool fixed_window = configured_cutoff > 0 && !configured_date.empty() && !configured_cutoff_iso.empty();
+        const bool run_once = env("NEWS_ENRICHER_ONCE") == "true";
+        const auto idle_polls_before_exit = static_cast<std::size_t>(env_int("NEWS_ENRICHER_IDLE_POLLS", 10));
         std::vector<arrakis::news::EnrichedArticle> aggregate;
         std::string aggregate_date = configured_date;
+        const auto persist_daily = [&](const PredictionWindow& window) {
+            const auto daily = arrakis::news::aggregate_daily(window.trading_date, window.cutoff_unix_ms, aggregate, window_start);
+            const auto xlk_bars = database.daily_market_bars("XLK", window.cutoff_unix_ms);
+            const auto spy_bars = database.daily_market_bars("SPY", window.cutoff_unix_ms);
+            std::vector<arrakis::news::MarketDay> xlk_days;
+            std::vector<arrakis::news::MarketDay> spy_days;
+            xlk_days.reserve(xlk_bars.size());
+            spy_days.reserve(spy_bars.size());
+            for (const auto& bar : xlk_bars) xlk_days.push_back({bar.trading_date, bar.close, bar.volume});
+            for (const auto& bar : spy_bars) spy_days.push_back({bar.trading_date, bar.close, bar.volume});
+            const auto market_values = arrakis::news::market_feature_vector(xlk_days, spy_days, window.trading_date);
+            if (!market_values) throw std::runtime_error{"Persisted market history is insufficient for " + window.trading_date};
+            const auto latest_iso = daily.latest_article_unix_ms > 0 ? iso_from_ms(daily.latest_article_unix_ms) : std::string{};
+            database.persist_daily_news_features("XLK", window.trading_date, window.cutoff_iso, latest_iso,
+                                                 std::string{arrakis::news::kCombinedFeatureSchemaHash},
+                                                 daily.to_combined_json(*market_values), static_cast<int>(aggregate.size()),
+                                                 daily.coverage_status, "[]");
+        };
+        std::size_t idle_polls = 0;
         for (;;) {
             const auto record = consumer.poll(std::chrono::milliseconds{1000});
-            if (!record) continue;
+            if (!record) {
+                if (run_once && ++idle_polls >= idle_polls_before_exit) {
+                    const auto window = fixed_window
+                        ? PredictionWindow{configured_cutoff, configured_date, configured_cutoff_iso}
+                        : current_window();
+                    if (aggregate_date != window.trading_date) {
+                        aggregate.clear();
+                        aggregate_date = window.trading_date;
+                    }
+                    persist_daily(window);
+                    producer.flush(std::chrono::seconds{10});
+                    return EXIT_SUCCESS;
+                }
+                continue;
+            }
+            idle_polls = 0;
             try {
                 const auto window = fixed_window
                     ? PredictionWindow{configured_cutoff, configured_date, configured_cutoff_iso}
@@ -113,19 +149,7 @@ int main() {
                 database.persist_news_entities(article.article_id, article.entity_ids);
                 database.persist_news_features(article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, embedding_json(output.pooled_embedding), "xlk-news-features-v1", 0.0);
                 aggregate.push_back({article, {article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms}, 1.0, has_company_entity(article.entity_ids), false, true});
-                const auto daily = arrakis::news::aggregate_daily(window.trading_date, window.cutoff_unix_ms, aggregate, window_start);
-                const auto xlk_bars = database.daily_market_bars("XLK", window.cutoff_unix_ms);
-                const auto spy_bars = database.daily_market_bars("SPY", window.cutoff_unix_ms);
-                std::vector<arrakis::news::MarketDay> xlk_days;
-                std::vector<arrakis::news::MarketDay> spy_days;
-                xlk_days.reserve(xlk_bars.size());
-                spy_days.reserve(spy_bars.size());
-                for (const auto& bar : xlk_bars) xlk_days.push_back({bar.trading_date, bar.close, bar.volume});
-                for (const auto& bar : spy_bars) spy_days.push_back({bar.trading_date, bar.close, bar.volume});
-                const auto market_values = arrakis::news::market_feature_vector(xlk_days, spy_days, window.trading_date);
-                if (!market_values) throw std::runtime_error{"Persisted market history is insufficient for " + window.trading_date};
-                const auto latest_iso = daily.latest_article_unix_ms > 0 ? iso_from_ms(daily.latest_article_unix_ms) : std::string{};
-                database.persist_daily_news_features("XLK", window.trading_date, window.cutoff_iso, latest_iso, std::string{arrakis::news::kCombinedFeatureSchemaHash}, daily.to_combined_json(*market_values), static_cast<int>(aggregate.size()), daily.coverage_status, "[]");
+                persist_daily(window);
                 const auto enriched = arrakis::news::serialize_enriched_feature({article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms});
                 producer.publish(env("NEWS_ENRICHED_TOPIC", "news.enriched.features"), "XLK", enriched); producer.poll_events(std::chrono::milliseconds{0}); consumer.commit(*record);
             } catch (const std::exception& error) { std::cerr << "{\"service\":\"news-enricher\",\"error\":\"" << error.what() << "\"}\n"; }
