@@ -82,7 +82,7 @@ function marketStatus() {
 function Shell({ children }: { children: React.ReactNode }) {
   return <div className="app-shell">
     <header>
-      <Link to="/" className="brand"><span className="brand-mark">A</span><span>ARRAKIS <em>/ FINNHUB ETF RESEARCH</em></span></Link>
+      <Link to="/" className="brand"><span className="brand-mark">A</span><span>Arrakis</span></Link>
       <nav className="top-nav" aria-label="Primary navigation">
         <NavLink to="/"><LayoutDashboard size={16}/><span>ETF dashboard</span></NavLink>
         <NavLink to="/recommendation"><GitBranch size={16}/><span>Recommendations</span></NavLink>
