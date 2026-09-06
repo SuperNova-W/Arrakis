@@ -20,7 +20,7 @@ import { ETF_UNIVERSE, findEtf, type EtfDefinition } from './etfUniverse'
 import { FinnhubError, getQuote } from './finnhub/client'
 import { calculateStatistics } from './finnhub/indicators'
 import { clearFinnhubKey, configuredFinnhubKey, saveFinnhubKey } from './finnhub/key'
-import { useFinnhubEtfProfile, useFinnhubProfile, useFinnhubQuote, useIndicators } from './finnhub/hooks'
+import { useFinnhubProfile, useFinnhubQuote, useIndicators } from './finnhub/hooks'
 import type { Candle, ChartRange, ChartStyle, IndicatorKey } from './finnhub/types'
 import { useLiveMarket } from './liveMarket/hooks'
 import type { ConnectionStatus, LiveTrade } from './liveMarket/types'
@@ -247,7 +247,6 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
   const quote = useFinnhubQuote(symbol, apiKey)
   const candles = useTwelveDataCandles(symbol, range, TWELVE_DATA_API_KEY)
   const profile = useFinnhubProfile(symbol, apiKey)
-  const etfProfile = useFinnhubEtfProfile(symbol, apiKey)
   const comparison = useTwelveDataCandles(benchmark, range, TWELVE_DATA_API_KEY)
   const liveMarket = useLiveMarket(definition?.symbol ?? '')
   const rangeRequest = twelveDataRangeRequest(range)
@@ -255,9 +254,6 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
   const displayedComparison = useMemo(() => visibleCandles(comparison.data ?? [], range, extendedHours), [comparison.data, range, extendedHours])
   const indicators = useIndicators(displayedCandles)
   const statistics = useMemo(() => calculateStatistics(displayedCandles, rangeRequest.interval === '1day' ? 252 : rangeRequest.interval === '1week' ? 52 : rangeRequest.interval === '1month' ? 12 : 98_280), [displayedCandles, rangeRequest.interval])
-  const holdings = etfProfile.data?.holdings ?? []
-  const sectorExposure = Object.entries(etfProfile.data?.sectorExposure ?? {}).sort((left, right) => right[1] - left[1])
-
   if (!definition) return <FinnhubErrorState error={new FinnhubError(`${symbol} is not in the configured ETF universe.`, 'NO_DATA')}/>
 
   const toggleIndicator = (key: IndicatorKey) => {
@@ -278,9 +274,8 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
     <Topbar eyebrow={`FINNHUB ETF VIEW · ${marketStatus().toUpperCase()}`} title={`${symbol} · ${profile.data?.name ?? definition.name}`}>
       <Link to="/" className="outline-btn">← Dashboard</Link>
       <button className="outline-btn" disabled={!candles.data?.length} onClick={() => csvDownload(symbol, candles.data ?? [])}><Download size={14}/> CSV</button>
-      <button className="outline-btn" onClick={() => { quote.refresh(); candles.refresh(); profile.refresh(); etfProfile.refresh(); comparison.refresh() }}><RefreshCw size={14}/> Refresh</button>
+      <button className="outline-btn" onClick={() => { quote.refresh(); candles.refresh(); profile.refresh(); comparison.refresh() }}><RefreshCw size={14}/> Refresh</button>
     </Topbar>
-    <div className="notice-banner live-source"><Database size={17}/><div><b>Twelve Data chart history</b><span>{candles.cached ? `Browser cache${candles.stale ? ' · stale after refresh failure' : ''}` : 'Fresh Twelve Data response'} · {rangeRequest.label} history. Arrakis market-api WebSocket runs independently and feeds the backend inference pipeline; it does not source this chart.</span></div><span className="chart-source">REST</span></div>
 
     <section className="panel finnhub-viewer">
       <div className="viewer-header">
@@ -323,26 +318,12 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
         <Metric label="Average volume" value={formatNumber(statistics?.averageVolume)}/>
         <Metric label="Displayed bars" value={formatNumber(displayedCandles.length)}/>
       </div></div>
-      <div className="panel profile-panel"><div className="panel-head"><div><div className="eyebrow">FINNHUB ETF PROFILE</div><h2>Fund information</h2></div></div>{etfProfile.error && !etfProfile.data ? <EntitlementNote error={etfProfile.error}/> : <div className="research-metrics">
-        <Metric label="Asset class" value={etfProfile.data?.assetClass ?? '—'}/>
-        <Metric label="Expense ratio" value={etfProfile.data?.expenseRatio == null ? '—' : `${etfProfile.data.expenseRatio}%`}/>
-        <Metric label="AUM" value={etfProfile.data?.aum == null ? '—' : `$${formatNumber(etfProfile.data.aum)}`}/>
-        <Metric label="NAV" value={formatPrice(etfProfile.data?.nav)}/>
-        <Metric label="Inception" value={etfProfile.data?.inceptionDate ?? '—'}/>
-        <Metric label="ISIN" value={etfProfile.data?.isin ?? '—'}/>
-      </div>}</div>
-      <div className="panel holdings-panel"><div className="panel-head"><div><div className="eyebrow">COMPOSITION</div><h2>Top holdings</h2></div><span>{holdings.length} returned</span></div>{holdings.length ? <div className="holding-list">{holdings.slice(0, 10).map((holding, index) => <div key={`${holding.symbol ?? holding.name}-${index}`}><span><b>{holding.symbol ?? '—'}</b>{holding.name}</span><strong>{holding.percent == null ? '—' : `${holding.percent.toFixed(2)}%`}</strong></div>)}</div> : <EntitlementNote error={etfProfile.error}/>}</div>
-      <div className="panel exposure-panel"><div className="panel-head"><div><div className="eyebrow">COMPOSITION</div><h2>Sector exposure</h2></div></div>{sectorExposure.length ? <div className="exposure-list">{sectorExposure.slice(0, 10).map(([sector, exposure]) => <div key={sector}><span>{sector}</span><div><i style={{ width: `${Math.min(100, exposure)}%` }}/></div><b>{exposure.toFixed(1)}%</b></div>)}</div> : <EntitlementNote error={etfProfile.error}/>}</div>
     </section>
   </>
 }
 
 function Metric({ label, value, tone = '' }: { label: string; value: string; tone?: string }) {
   return <div className="metric"><span>{label}</span><b className={tone}>{value}</b></div>
-}
-
-function EntitlementNote({ error }: { error?: FinnhubError | null }) {
-  return <div className="entitlement-note"><ShieldCheck size={18}/><div><b>{error?.code === 'ENTITLEMENT' ? 'Finnhub entitlement required' : 'No composition returned'}</b><p>{error?.message ?? 'This Finnhub response did not include ETF composition data.'}</p></div></div>
 }
 
 function DataStatus({ apiKey }: { apiKey: string }) {
