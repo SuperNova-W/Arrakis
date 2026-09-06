@@ -77,7 +77,7 @@ async function request<T>(
   signal?: AbortSignal,
   allowStale = true,
 ): Promise<{ value: T; cached: boolean; stale: boolean }> {
-  if (!apiKey.trim()) throw new FinnhubError('Enter a Finnhub API key to load ETF data.', 'MISSING_KEY')
+  if (!apiKey.trim()) throw new FinnhubError('Finnhub market data is not configured for this deployment.', 'MISSING_KEY')
   const cached = await readCache<T>(key)
   if (cached && cacheIsFresh(cached)) return { value: cached.value, cached: true, stale: false }
   const existing = inFlight.get(key) as Promise<{ value: T; cached: boolean; stale: boolean }> | undefined

@@ -8,18 +8,16 @@ import {
   Download,
   Gauge,
   GitBranch,
-  KeyRound,
   LayoutDashboard,
   RefreshCw,
-  Settings,
   ShieldCheck,
   WifiOff,
 } from 'lucide-react'
 import FinnhubChart from './components/FinnhubChart'
 import { ETF_UNIVERSE, findEtf, type EtfDefinition } from './etfUniverse'
-import { FinnhubError, getQuote } from './finnhub/client'
+import { FinnhubError } from './finnhub/client'
 import { calculateStatistics } from './finnhub/indicators'
-import { clearFinnhubKey, configuredFinnhubKey, saveFinnhubKey } from './finnhub/key'
+import { configuredFinnhubKey } from './finnhub/key'
 import { useFinnhubProfile, useFinnhubQuote, useIndicators } from './finnhub/hooks'
 import type { Candle, ChartRange, ChartStyle, IndicatorKey } from './finnhub/types'
 import { TwelveDataError } from './twelveData/client'
@@ -82,7 +80,7 @@ function marketStatus() {
   return open ? 'Market open' : 'Market closed'
 }
 
-function Shell({ children, onConfigure }: { children: React.ReactNode; onConfigure: () => void }) {
+function Shell({ children }: { children: React.ReactNode }) {
   return <div className="app-shell">
     <header>
       <Link to="/" className="brand"><span className="brand-mark">A</span><span>ARRAKIS <em>/ FINNHUB ETF RESEARCH</em></span></Link>
@@ -91,7 +89,6 @@ function Shell({ children, onConfigure }: { children: React.ReactNode; onConfigu
         <NavLink to="/health"><Gauge size={16}/><span>Data status</span></NavLink>
         <NavLink to="/recommendation"><GitBranch size={16}/><span>Recommendations</span></NavLink>
       </nav>
-      <button className="header-config" onClick={onConfigure}><Settings size={15}/> Finnhub key</button>
     </header>
     <main>{children}</main>
     <div className="disclaimer"><AlertTriangle size={13}/> {DISCLAIMER}</div>
@@ -113,50 +110,6 @@ function FinnhubErrorState({ error, retry, compact = false, provider = 'Finnhub'
   return <div className={`panel empty-state finnhub-error ${compact ? 'compact' : ''}`}>
     <WifiOff size={20}/>
     <div><h2>{title}</h2><p>{error.message}</p><small className="mono">{error.code}{error.status ? ` · HTTP ${error.status}` : ''}</small>{retry && <button className="outline-btn" onClick={retry}><RefreshCw size={14}/> Retry</button>}</div>
-  </div>
-}
-
-function KeySetup({ initialKey, onReady, onCancel }: { initialKey: string; onReady: (key: string) => void; onCancel?: () => void }) {
-  const [value, setValue] = useState(initialKey)
-  const [checking, setChecking] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const validate = async () => {
-    const normalized = value.trim()
-    if (!normalized) {
-      setError('Enter a Finnhub API key.')
-      return
-    }
-    setChecking(true)
-    setError(null)
-    const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), 10_000)
-    try {
-      await getQuote('XLK', normalized, controller.signal)
-      saveFinnhubKey(normalized)
-      onReady(normalized)
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Finnhub validation failed.')
-    } finally {
-      window.clearTimeout(timeout)
-      setChecking(false)
-    }
-  }
-
-  return <div className={onCancel ? 'modal-backdrop' : 'key-gate'}>
-    <section className="panel key-panel">
-      <KeyRound size={26}/>
-      <div className="eyebrow">DIRECT FINNHUB CONNECTION</div>
-      <h2>Connect ETF market data</h2>
-      <p>The browser will call Finnhub directly. The key is held in session storage and is cleared when the browser session ends. It is never sent to Supabase or the Arrakis backend.</p>
-      <label><span>Finnhub API key</span><input type="password" autoComplete="off" value={value} onChange={event => setValue(event.target.value)} placeholder="Paste your Finnhub key"/></label>
-      {error && <div className="key-error">{error}</div>}
-      <div className="dialog-actions">
-        {onCancel && <button className="outline-btn" onClick={onCancel}>Cancel</button>}
-        <button className="primary-btn" disabled={checking} onClick={validate}>{checking ? 'Checking Finnhub…' : 'Validate and continue'}</button>
-      </div>
-      <small>Historical stock candles may require Finnhub premium market-data access.</small>
-    </section>
   </div>
 }
 
@@ -339,7 +292,6 @@ function DataStatus({ apiKey }: { apiKey: string }) {
   return <>
     <Topbar eyebrow="FRONTEND DATA DIAGNOSTICS" title="Data connection status"><button className="outline-btn" onClick={() => { quote.refresh(); candles.refresh() }}><RefreshCw size={14}/> Run checks</button></Topbar>
     <div className="health-grid">
-      <StatusCard label="Finnhub API key" value={apiKey ? 'configured' : 'missing'} good={Boolean(apiKey)}/>
       <StatusCard label="Twelve Data API key" value={TWELVE_DATA_API_KEY ? 'configured' : 'missing'} good={Boolean(TWELVE_DATA_API_KEY)}/>
       <StatusCard label="XLK quote" value={quote.loading ? 'checking' : quote.error ? quote.error.code : 'available'} good={Boolean(quote.data)}/>
       <StatusCard label="Stock candles" value={candles.loading ? 'checking' : candles.error ? candles.error.code : candles.data?.length ? `${candles.data.length} bars` : 'no_data'} good={Boolean(candles.data?.length)}/>
@@ -421,12 +373,8 @@ function RouterView({ apiKey }: { apiKey: string }) {
 }
 
 export default function App() {
-  const [apiKey, setApiKey] = useState(configuredFinnhubKey)
-  const [configuring, setConfiguring] = useState(false)
-  if (!apiKey) return <KeySetup initialKey="" onReady={setApiKey}/>
-  return <Shell onConfigure={() => setConfiguring(true)}>
+  const apiKey = configuredFinnhubKey()
+  return <Shell>
     <RouterView apiKey={apiKey}/>
-    {configuring && <KeySetup initialKey={apiKey} onReady={key => { setApiKey(key); setConfiguring(false) }} onCancel={() => setConfiguring(false)}/>}
-    <button className="clear-key" onClick={() => { clearFinnhubKey(); setApiKey('') }}>Clear session key</button>
   </Shell>
 }
