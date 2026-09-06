@@ -28,6 +28,7 @@ public:
     KafkaProducer& operator=(const KafkaProducer&) = delete;
 
     void publish(std::string_view topic, std::string_view key, std::span<const std::byte> payload);
+    void ensure_topic(std::string_view topic, int partitions = 6, int replication_factor = -1);
     void poll_events(std::chrono::milliseconds timeout);
     void flush(std::chrono::milliseconds timeout);
     [[nodiscard]] bool usable() const noexcept;

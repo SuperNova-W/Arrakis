@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdio>
 #include <atomic>
+#include <memory>
 
 namespace arrakis::streaming {
 namespace {
@@ -52,6 +53,37 @@ void KafkaProducer::publish(std::string_view topic, std::string_view key, std::s
         key.data(), key.size(), nullptr);
     rd_kafka_topic_destroy(kafka_topic);
     if (error != 0) throw std::runtime_error(std::string("Kafka publish: ") + rd_kafka_err2str(rd_kafka_last_error()));
+}
+void KafkaProducer::ensure_topic(std::string_view topic, int partitions, int replication_factor) {
+    char error[512]{};
+    const std::string topic_name(topic);
+    std::unique_ptr<rd_kafka_NewTopic_t, decltype(&rd_kafka_NewTopic_destroy)> new_topic(
+        rd_kafka_NewTopic_new(topic_name.c_str(), partitions, replication_factor, error, sizeof(error)),
+        &rd_kafka_NewTopic_destroy);
+    if (!new_topic) throw std::runtime_error(std::string("Kafka topic definition: ") + error);
+
+    std::unique_ptr<rd_kafka_AdminOptions_t, decltype(&rd_kafka_AdminOptions_destroy)> options(
+        rd_kafka_AdminOptions_new(impl_->handle, RD_KAFKA_ADMIN_OP_CREATETOPICS),
+        &rd_kafka_AdminOptions_destroy);
+    if (!options) throw std::runtime_error("Kafka admin options allocation failed");
+    check(rd_kafka_AdminOptions_set_request_timeout(options.get(), 45000, error, sizeof(error)), "Kafka admin request timeout");
+    check(rd_kafka_AdminOptions_set_operation_timeout(options.get(), 30000, error, sizeof(error)), "Kafka admin operation timeout");
+
+    std::unique_ptr<rd_kafka_queue_t, decltype(&rd_kafka_queue_destroy)> queue(rd_kafka_queue_new(impl_->handle), &rd_kafka_queue_destroy);
+    if (!queue) throw std::runtime_error("Kafka admin queue allocation failed");
+    rd_kafka_NewTopic_t* topics[] = {new_topic.get()};
+    rd_kafka_CreateTopics(impl_->handle, topics, 1, options.get(), queue.get());
+    std::unique_ptr<rd_kafka_event_t, decltype(&rd_kafka_event_destroy)> event(rd_kafka_queue_poll(queue.get(), 45000), &rd_kafka_event_destroy);
+    if (!event) throw std::runtime_error("Kafka topic creation timed out");
+    check(rd_kafka_event_error(event.get()), "Kafka topic creation request");
+    if (rd_kafka_event_type(event.get()) != RD_KAFKA_EVENT_CREATETOPICS_RESULT) throw std::runtime_error("Kafka topic creation returned an unexpected event");
+    size_t result_count = 0;
+    const auto* results = rd_kafka_CreateTopics_result_topics(rd_kafka_event_CreateTopics_result(event.get()), &result_count);
+    if (results == nullptr || result_count != 1) throw std::runtime_error("Kafka topic creation returned no topic result");
+    const auto result_error = rd_kafka_topic_result_error(results[0]);
+    if (result_error != RD_KAFKA_RESP_ERR_NO_ERROR && result_error != RD_KAFKA_RESP_ERR_TOPIC_ALREADY_EXISTS) {
+        throw std::runtime_error(std::string("Kafka topic creation: ") + rd_kafka_err2str(result_error));
+    }
 }
 void KafkaProducer::poll_events(std::chrono::milliseconds timeout) { rd_kafka_poll(impl_->handle, static_cast<int>(timeout.count())); }
 void KafkaProducer::flush(std::chrono::milliseconds timeout) { check(rd_kafka_flush(impl_->handle, static_cast<int>(timeout.count())), "Kafka flush"); }

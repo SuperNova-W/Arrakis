@@ -167,6 +167,9 @@ std::vector<std::string> poll_universe(
 int main(int argc, char** argv) {
     try {
         arrakis::streaming::KafkaProducer producer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), "news-ingestion-v1");
+        if (env("ARRAKIS_KAFKA_CREATE_TOPICS") == "true") {
+            producer.ensure_topic(env("NEWS_RAW_TOPIC", "news.raw.articles"));
+        }
         std::uint64_t published = 0;
         std::unordered_set<std::string> published_ids;
         const auto publish = [&](const arrakis::news::Article& article) {

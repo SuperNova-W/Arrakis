@@ -97,6 +97,9 @@ jobs:
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       POSTGRES_SSLMODE: require
       FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      # The ephemeral broker is intentionally empty on each run. Topic creation
+      # is opt-in here; long-lived environments should provision topics via IaC.
+      ARRAKIS_KAFKA_CREATE_TOPICS: 'true'
       # The gate stays CLOSED. No target has cleared the documented walk-forward
       # bar, and AGENTS.md forbids presenting a prediction without that evidence.
       # Flip this to 'true' only when a target clears it.
@@ -340,7 +343,7 @@ jobs:
           XLK_HOLDINGS_HISTORY: ${{ github.workspace }}/backend/data/metadata/xlk_holdings_history.csv
         run: |
           set -uo pipefail
-          timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-poll XLK 2>&1 | tee /tmp/ingest.log &
+          timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-poll XLK > >(tee /tmp/ingest.log) 2>&1 &
           pid=$!
           for _ in $(seq 1 120); do
             grep -q '"event":"poll_complete"' /tmp/ingest.log && break
