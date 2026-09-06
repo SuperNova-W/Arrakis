@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Database,
   Download,
-  Gauge,
   GitBranch,
   LayoutDashboard,
   RefreshCw,
@@ -86,7 +85,6 @@ function Shell({ children }: { children: React.ReactNode }) {
       <Link to="/" className="brand"><span className="brand-mark">A</span><span>ARRAKIS <em>/ FINNHUB ETF RESEARCH</em></span></Link>
       <nav className="top-nav" aria-label="Primary navigation">
         <NavLink to="/"><LayoutDashboard size={16}/><span>ETF dashboard</span></NavLink>
-        <NavLink to="/health"><Gauge size={16}/><span>Data status</span></NavLink>
         <NavLink to="/recommendation"><GitBranch size={16}/><span>Recommendations</span></NavLink>
       </nav>
     </header>
@@ -286,27 +284,6 @@ function Metric({ label, value, tone = '' }: { label: string; value: string; ton
   return <div className="metric"><span>{label}</span><b className={tone}>{value}</b></div>
 }
 
-function DataStatus({ apiKey }: { apiKey: string }) {
-  const quote = useFinnhubQuote('XLK', apiKey)
-  const candles = useTwelveDataCandles('XLK', '1D', TWELVE_DATA_API_KEY)
-  return <>
-    <Topbar eyebrow="FRONTEND DATA DIAGNOSTICS" title="Data connection status"><button className="outline-btn" onClick={() => { quote.refresh(); candles.refresh() }}><RefreshCw size={14}/> Run checks</button></Topbar>
-    <div className="health-grid">
-      <StatusCard label="Twelve Data API key" value={TWELVE_DATA_API_KEY ? 'configured' : 'missing'} good={Boolean(TWELVE_DATA_API_KEY)}/>
-      <StatusCard label="XLK quote" value={quote.loading ? 'checking' : quote.error ? quote.error.code : 'available'} good={Boolean(quote.data)}/>
-      <StatusCard label="Stock candles" value={candles.loading ? 'checking' : candles.error ? candles.error.code : candles.data?.length ? `${candles.data.length} bars` : 'no_data'} good={Boolean(candles.data?.length)}/>
-      <StatusCard label="Market state" value={marketStatus()} good/>
-    </div>
-    <div className="panel operational-note"><ShieldCheck size={20}/><div><h2>Verified data boundary</h2><p>ETF quotes and profile/holdings calls are issued directly to finnhub.io. Historical chart candles are issued directly to api.twelvedata.com. IndexedDB is used only as a browser cache. The Arrakis market-api WebSocket runs independently and feeds the backend inference pipeline; the frontend chart does not use database-backed bar REST endpoints.</p></div></div>
-    {quote.error && <FinnhubErrorState error={quote.error} retry={quote.refresh}/>}
-    {candles.error && <FinnhubErrorState error={candles.error} retry={candles.refresh} provider="Twelve Data"/>}
-  </>
-}
-
-function StatusCard({ label, value, good }: { label: string; value: string; good: boolean }) {
-  return <div className="panel health-metric"><span className="eyebrow">{label}</span><strong className={good ? 'good' : 'warn'}>{value}</strong><small>Direct browser check</small></div>
-}
-
 function Recommendation() {
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
   const ml = useMlRecommendation(date)
@@ -367,7 +344,6 @@ function MlErrorState({ error, retry, compact = false }: { error: MlApiError; re
 function RouterView({ apiKey }: { apiKey: string }) {
   const path = window.location.pathname
   if (path.startsWith('/etfs/')) return <ETFDetail apiKey={apiKey}/>
-  if (path === '/health') return <DataStatus apiKey={apiKey}/>
   if (path === '/recommendation') return <Recommendation/>
   return <Dashboard apiKey={apiKey}/>
 }
