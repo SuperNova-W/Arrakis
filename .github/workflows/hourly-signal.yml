@@ -157,6 +157,10 @@ jobs:
           # own calendar date. Without it the aggregate would span the whole
           # NEWS_POLL_LOOKBACK_DAYS republication window.
           window_start_epoch=$(TZ=America/New_York date -d "$signal_date 00:00:00" +%s)
+          # Finnhub's daily candle endpoint uses an exclusive upper bound. Give
+          # it a full day and a half after midnight ET so the target day's
+          # regular-session candle is included in either DST regime.
+          history_end_epoch=$((window_start_epoch + 36 * 3600))
 
           {
             echo "skip=false"
@@ -166,6 +170,7 @@ jobs:
             echo "cutoff_iso=$(date -u -d "@$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ)"
             echo "window_start_ms=$((window_start_epoch * 1000))"
             echo "window_start_iso=$(date -u -d "@$window_start_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+            echo "history_end_iso=$(date -u -d "@$history_end_epoch" +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
           echo "$signal_date / $run_kind / cutoff $(date -u -d "@$cutoff_epoch" +%Y-%m-%dT%H:%M:%SZ)"
@@ -280,8 +285,22 @@ jobs:
       - name: Refresh daily market history
         if: steps.window.outputs.skip != 'true'
         working-directory: backend
-        continue-on-error: true
-        run: ./build/ci/fetch-historical-data || echo "::warning::History refresh failed; falling back to committed CSVs."
+        env:
+          # The model has verified coverage from 2019 onward. Fetching the
+          # complete model window on the ephemeral runner keeps the current
+          # target-day bar while preserving the warm-up history needed by the
+          # daily feature builder. The loader upserts it into durable Supabase.
+          HISTORY_START_UTC: '2019-01-01T00:00:00Z'
+          HISTORY_END_UTC: ${{ steps.window.outputs.history_end_iso }}
+        run: |
+          set -euo pipefail
+          for symbol in XLK SPY; do
+            ./build/ci/fetch-historical-data \
+              --symbol "$symbol" \
+              --resolution D \
+              --start "$HISTORY_START_UTC" \
+              --end "$HISTORY_END_UTC"
+          done
 
       - name: Seed daily bars into Supabase
         if: steps.window.outputs.skip != 'true'
