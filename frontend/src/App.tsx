@@ -182,7 +182,8 @@ type BatchInferenceStatus = {
   label: string
 }
 
-function batchInferenceStatus(state: ReturnType<typeof useMlRecommendation>): BatchInferenceStatus {
+function batchInferenceStatus(state: ReturnType<typeof useMlRecommendation>, symbol: string): BatchInferenceStatus {
+  if (symbol !== 'XLK') return { tone: 'unavailable', label: 'XLK only' }
   const document = state.news.data ?? state.prediction.data
   if (state.loading) return { tone: 'checking', label: 'Checking' }
   if (!document) return { tone: 'unavailable', label: 'No published run' }
@@ -206,7 +207,7 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
   const profile = useFinnhubProfile(symbol, apiKey)
   const comparison = useTwelveDataCandles(benchmark, range, TWELVE_DATA_API_KEY)
   const batchInference = useMlRecommendation(currentMarketDate(), symbol, true)
-  const batchStatus = batchInferenceStatus(batchInference)
+  const batchStatus = batchInferenceStatus(batchInference, symbol)
   const rangeRequest = twelveDataRangeRequest(range)
   const displayedCandles = useMemo(() => visibleCandles(candles.data ?? [], range, extendedHours), [candles.data, range, extendedHours])
   const displayedComparison = useMemo(() => visibleCandles(comparison.data ?? [], range, extendedHours), [comparison.data, range, extendedHours])
