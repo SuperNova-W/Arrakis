@@ -2,12 +2,14 @@
 
 #include <libpq-fe.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdlib>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace arrakis::database {
 namespace {
@@ -267,20 +269,50 @@ std::size_t PostgresPool::upsert_daily_bars(const std::vector<DailyBarRecord>& b
     Result begin(PQexec(lease.connection, "BEGIN"));
     require_result(begin.get());
     try {
-        for (const auto& bar : bars) {
-            const std::string open = std::to_string(bar.open), high = std::to_string(bar.high),
-                              low = std::to_string(bar.low), close = std::to_string(bar.close),
-                              volume = std::to_string(bar.volume);
-            const char* values[] = {bar.symbol.c_str(), bar.trading_date.c_str(), open.c_str(), high.c_str(),
-                                    low.c_str(),        close.c_str(),            volume.c_str(),
-                                    source_value.c_str()};
-            Result result(PQexecParams(lease.connection,
-                "INSERT INTO etf_bars_daily(symbol,trading_date,open,high,low,close,volume,source)"
-                " VALUES($1,$2::date,$3,$4,$5,$6,$7,$8)"
+        constexpr std::size_t batch_size = 500;
+        for (std::size_t begin_index = 0; begin_index < bars.size(); begin_index += batch_size) {
+            const auto end_index = std::min(begin_index + batch_size, bars.size());
+            std::string query =
+                "INSERT INTO etf_bars_daily(symbol,trading_date,open,high,low,close,volume,source) VALUES ";
+            std::vector<std::string> owned_values;
+            owned_values.reserve((end_index - begin_index) * 8);
+            std::vector<const char*> values;
+            values.reserve((end_index - begin_index) * 8);
+            int parameter = 1;
+            for (std::size_t index = begin_index; index < end_index; ++index) {
+                const auto& bar = bars[index];
+                const std::string open = std::to_string(bar.open), high = std::to_string(bar.high),
+                                  low = std::to_string(bar.low), close = std::to_string(bar.close),
+                                  volume = std::to_string(bar.volume);
+                if (index != begin_index) query += ',';
+                const auto symbol_parameter = parameter++;
+                const auto date_parameter = parameter++;
+                const auto open_parameter = parameter++;
+                const auto high_parameter = parameter++;
+                const auto low_parameter = parameter++;
+                const auto close_parameter = parameter++;
+                const auto volume_parameter = parameter++;
+                const auto source_parameter = parameter++;
+                query += "($" + std::to_string(symbol_parameter) + ",$" + std::to_string(date_parameter) +
+                         "::date,$" + std::to_string(open_parameter) + ",$" + std::to_string(high_parameter) +
+                         ",$" + std::to_string(low_parameter) + ",$" + std::to_string(close_parameter) + ",$" +
+                         std::to_string(volume_parameter) + ",$" + std::to_string(source_parameter) + ")";
+                owned_values.push_back(bar.symbol);
+                owned_values.push_back(bar.trading_date);
+                owned_values.push_back(open);
+                owned_values.push_back(high);
+                owned_values.push_back(low);
+                owned_values.push_back(close);
+                owned_values.push_back(volume);
+                owned_values.push_back(source_value);
+            }
+            for (const auto& value : owned_values) values.push_back(value.c_str());
+            query +=
                 " ON CONFLICT(symbol,trading_date) DO UPDATE SET"
                 " open=EXCLUDED.open,high=EXCLUDED.high,low=EXCLUDED.low,close=EXCLUDED.close,"
-                " volume=EXCLUDED.volume,source=EXCLUDED.source,inserted_at=NOW()",
-                8, nullptr, values, nullptr, nullptr, 0));
+                " volume=EXCLUDED.volume,source=EXCLUDED.source,inserted_at=NOW()";
+            Result result(PQexecParams(lease.connection, query.c_str(), static_cast<int>(values.size()), nullptr,
+                                       values.data(), nullptr, nullptr, 0));
             require_result(result.get());
         }
         Result commit(PQexec(lease.connection, "COMMIT"));
