@@ -93,25 +93,27 @@ using Series = std::map<std::string, Bar>;
 
 int main(const int argc, char** argv) {
     try {
-        if (argc != 5) {
+        if (argc != 5 && argc != 6) {
             std::cout << "Usage: arrakis-build-xlk-market-dataset <history_dir> <output.csv> "
-                         "<from-date> <to-date>\n";
+                         "<from-date> <to-date> [target-symbol]\n";
             return 0;
         }
         const auto history_dir = std::filesystem::path{argv[1]};
         const auto output_path = std::filesystem::path{argv[2]};
         const std::string from_date{argv[3]};
         const std::string to_date{argv[4]};
+        const std::string target_symbol = argc == 6 ? argv[5] : "XLK";
         if (from_date.empty() || to_date.empty() || from_date > to_date) {
             throw std::invalid_argument{"Invalid date range"};
         }
-        const auto xlk = load_series(history_dir / "XLK.csv");
+        if (target_symbol.empty()) throw std::invalid_argument{"Target symbol is required"};
+        const auto target = load_series(history_dir / (target_symbol + ".csv"));
         const auto spy = load_series(history_dir / "SPY.csv");
         std::vector<std::pair<std::string, const Bar*>> dates;
-        for (const auto& [date, bar] : xlk) {
+        for (const auto& [date, bar] : target) {
             if (date >= from_date && date <= to_date) dates.emplace_back(date, &bar);
         }
-        if (dates.size() < 20) throw std::runtime_error{"Not enough XLK sessions in requested range"};
+        if (dates.size() < 20) throw std::runtime_error{"Not enough target sessions in requested range"};
 
         std::filesystem::create_directories(output_path.parent_path());
         std::ofstream output{output_path};
@@ -179,10 +181,11 @@ int main(const int argc, char** argv) {
                  << "  \"from_date\": \"" << from_date << "\",\n"
                  << "  \"to_date\": \"" << to_date << "\",\n"
                  << "  \"rows_written\": " << rows_written << ",\n"
+                 << "  \"target_symbol\": \"" << target_symbol << "\",\n"
                  << "  \"target\": \"target_next_close_up\",\n"
                  << "  \"target_policy\": \"close[t+1] > close[t]; features use data through close[t]\",\n"
                  << "  \"features\": [\"ret_1\",\"ret_3\",\"ret_6\",\"volatility_6\",\"volume_mean_6\",\"rel_volume\",\"rsi_14\",\"spy_ret_1\",\"sector_spy_diff\"]\n}\n";
-        std::cout << "Wrote " << rows_written << " full-history XLK market rows\n";
+        std::cout << "Wrote " << rows_written << ' ' << target_symbol << " market rows\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "arrakis-build-xlk-market-dataset: " << error.what() << '\n';

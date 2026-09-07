@@ -2,6 +2,7 @@
 #include "arrakis/market_api/live_market.hpp"
 #include "arrakis/news/feature_schema.hpp"
 #include "arrakis/news/finbert.hpp"
+#include "arrakis/news/market_features.hpp"
 #include "arrakis/serialization/serialization.hpp"
 #include "arrakis/streaming/kafka.hpp"
 
@@ -20,6 +21,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -29,6 +31,7 @@
 #include <vector>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <span>
@@ -104,6 +107,128 @@ public:
 private:
     BoosterHandle booster_{nullptr};
 };
+
+class MarketXGBoostModel final {
+public:
+    explicit MarketXGBoostModel(const std::filesystem::path& path) {
+        if (!std::filesystem::exists(path)) {
+            throw std::runtime_error("Local market XGBoost artifact is missing: " + path.string());
+        }
+        if (XGBoosterCreate(nullptr, 0, &booster_) != 0 ||
+            XGBoosterLoadModel(booster_, path.string().c_str()) != 0) {
+            if (booster_ != nullptr) XGBoosterFree(booster_);
+            booster_ = nullptr;
+            throw std::runtime_error("Local market XGBoost artifact could not be loaded: " + path.string());
+        }
+    }
+
+    ~MarketXGBoostModel() {
+        if (booster_ != nullptr) XGBoosterFree(booster_);
+    }
+
+    MarketXGBoostModel(const MarketXGBoostModel&) = delete;
+    MarketXGBoostModel& operator=(const MarketXGBoostModel&) = delete;
+
+    [[nodiscard]] double predict(const std::vector<float>& features) const {
+        if (features.size() != arrakis::news::kMarketFeatureCount) {
+            throw std::runtime_error("Market XGBoost feature vector has the wrong length");
+        }
+        DMatrixHandle matrix = nullptr;
+        if (XGDMatrixCreateFromMat(
+                features.data(), 1, features.size(), std::numeric_limits<float>::quiet_NaN(), &matrix) != 0) {
+            throw std::runtime_error("Unable to create market XGBoost feature matrix");
+        }
+        const char* config = R"({"type":0,"training":false,"iteration_begin":0,"iteration_end":0,"strict_shape":true})";
+        const bst_ulong* shape = nullptr;
+        bst_ulong dimensions = 0;
+        const float* predictions = nullptr;
+        const auto result = XGBoosterPredictFromDMatrix(
+            booster_, matrix, config, &shape, &dimensions, &predictions);
+        XGDMatrixFree(matrix);
+        if (result != 0 || dimensions == 0 || shape == nullptr || predictions == nullptr) {
+            throw std::runtime_error("Market XGBoost prediction failed");
+        }
+        return std::clamp(static_cast<double>(predictions[0]), 0.0, 1.0);
+    }
+
+private:
+    BoosterHandle booster_{nullptr};
+};
+
+struct MarketModelEntry final {
+    std::unique_ptr<MarketXGBoostModel> model;
+    std::string model_id;
+    bool promotion_eligible{};
+};
+
+class MarketModelRegistry final {
+public:
+    explicit MarketModelRegistry(const std::filesystem::path& model_dir,
+                                 const std::vector<arrakis::market_api::LiveEtf>& etfs) {
+        if (model_dir.empty()) return;
+        for (const auto& etf : etfs) {
+            auto model_path = model_dir / (etf.symbol + ".ubj");
+            if (!std::filesystem::exists(model_path)) {
+                model_path = model_dir / (etf.symbol + ".json");
+            }
+            if (!std::filesystem::exists(model_path)) continue;
+
+            MarketModelEntry entry;
+            try {
+                const auto manifest_path = model_path.string() + ".manifest.json";
+                if (!std::filesystem::exists(manifest_path)) {
+                    throw std::runtime_error("market model manifest is missing");
+                }
+                std::ifstream manifest_input(manifest_path);
+                const std::string manifest_text(
+                    (std::istreambuf_iterator<char>(manifest_input)), std::istreambuf_iterator<char>());
+                boost::system::error_code parse_error;
+                const auto manifest = boost::json::parse(manifest_text, parse_error);
+                if (parse_error || !manifest.is_object()) {
+                    throw std::runtime_error("market model manifest is malformed");
+                }
+                const auto* symbol = manifest.as_object().if_contains("symbol");
+                const auto* schema = manifest.as_object().if_contains("feature_schema_hash");
+                if (symbol == nullptr || !symbol->is_string() || symbol->as_string() != etf.symbol ||
+                    schema == nullptr || !schema->is_string() || schema->as_string() != "market-features-v1") {
+                    throw std::runtime_error("market model manifest identity or schema mismatch");
+                }
+                if (const auto* model_id = manifest.as_object().if_contains("model_id");
+                    model_id != nullptr && model_id->is_string()) {
+                    entry.model_id = model_id->as_string().c_str();
+                }
+                if (const auto* promoted = manifest.as_object().if_contains("promotion_eligible");
+                    promoted != nullptr && promoted->is_bool()) {
+                    entry.promotion_eligible = promoted->as_bool();
+                }
+                entry.model = std::make_unique<MarketXGBoostModel>(model_path);
+                if (entry.model_id.empty()) entry.model_id = etf.symbol + "-market-xgboost-v1";
+                entries_.emplace(etf.symbol, std::move(entry));
+            } catch (const std::exception& error) {
+                std::cerr << "{\"service\":\"market-api\",\"event\":\"market_model_unavailable\",\"symbol\":\""
+                          << etf.symbol << "\",\"error\":\"" << error.what() << "\"}\n";
+            }
+        }
+    }
+
+    [[nodiscard]] const MarketModelEntry* find(std::string_view symbol) const {
+        const auto found = entries_.find(std::string(symbol));
+        return found == entries_.end() ? nullptr : &found->second;
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+
+private:
+    std::unordered_map<std::string, MarketModelEntry> entries_;
+};
+
+std::vector<arrakis::news::MarketDay> market_days(
+    const std::vector<arrakis::database::DailyMarketBar>& bars) {
+    std::vector<arrakis::news::MarketDay> result;
+    result.reserve(bars.size());
+    for (const auto& bar : bars) result.push_back({bar.trading_date, bar.close, bar.volume});
+    return result;
+}
 
 std::string json_string(const boost::json::value& value) {
     return boost::json::serialize(value);
@@ -300,6 +425,7 @@ boost::json::value route(
     const arrakis::database::PostgresPool* database,
     const LiveMarketStore& market,
     const NewsXGBoostModel* model,
+    const MarketModelRegistry* market_models,
     bool model_validation_required,
     const arrakis::news::FinbertSession* finbert,
     const RuntimeState& runtime,
@@ -332,7 +458,40 @@ boost::json::value route(
         }
         const auto now = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::system_clock::now());
         const auto age = latest ? std::chrono::duration_cast<std::chrono::seconds>(now - std::chrono::time_point_cast<std::chrono::seconds>(latest->bar_end)).count() : -1;
-        return {{"database", database_healthy ? "ml-ready" : "unavailable"}, {"market_data_source", live_data ? "finnhub-websocket-via-kafka+database" : (database_healthy ? "database-fallback" : "finnhub-websocket-via-kafka")}, {"market_data_status", latest ? (age <= 120 ? "fresh" : "stale") : "waiting_for_stream"}, {"latest_bar_end", latest ? boost::json::value(iso_time(latest->bar_end)) : boost::json::value(nullptr)}, {"latest_bar_age_seconds", latest ? boost::json::value(age) : boost::json::value(nullptr)}, {"active_etfs", etfs.size()}, {"ml_available", model != nullptr}};
+        return {{"database", database_healthy ? "ml-ready" : "unavailable"}, {"market_data_source", live_data ? "finnhub-websocket-via-kafka+database" : (database_healthy ? "database-fallback" : "finnhub-websocket-via-kafka")}, {"market_data_status", latest ? (age <= 120 ? "fresh" : "stale") : "waiting_for_stream"}, {"latest_bar_end", latest ? boost::json::value(iso_time(latest->bar_end)) : boost::json::value(nullptr)}, {"latest_bar_age_seconds", latest ? boost::json::value(age) : boost::json::value(nullptr)}, {"active_etfs", etfs.size()}, {"ml_available", model != nullptr || (market_models != nullptr && market_models->size() > 0)}, {"market_model_count", market_models == nullptr ? 0 : market_models->size()}};
+    }
+    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[4] == "prediction") {
+        const auto symbol = path[3];
+        if (!market.supports(symbol)) { status = 404; return error_json("UNKNOWN_ETF", "ETF is not in the configured universe."); }
+        const auto date = query_value(target, "date");
+        if (!std::regex_match(date, std::regex(R"(\d{4}-\d{2}-\d{2})"))) { status = 400; return error_json("INVALID_DATE", "date must be YYYY-MM-DD."); }
+        if (market_models == nullptr || market_models->find(symbol) == nullptr) {
+            status = 503;
+            return error_json("MODEL_UNAVAILABLE", "No market model artifact is deployed for " + symbol + ".");
+        }
+        const auto* entry = market_models->find(symbol);
+        if (!entry->promotion_eligible) {
+            status = 503;
+            return error_json("NO_VALIDATED_MODEL", "A " + symbol + " model candidate is deployed, but it has not cleared the chronological promotion gate.");
+        }
+        if (!database_healthy) {
+            status = 503;
+            return error_json("ML_DATABASE_UNAVAILABLE", "The market feature database is unavailable.");
+        }
+        const auto cutoff = arrakis::database::session_close_unix_ms(date);
+        const auto target_days = market_days(database->daily_market_bars(symbol, cutoff));
+        const auto spy_days = market_days(database->daily_market_bars("SPY", cutoff));
+        const auto market_values = arrakis::news::market_feature_vector(target_days, spy_days, date);
+        if (!market_values.has_value()) {
+            status = 409;
+            return error_json("FEATURES_UNAVAILABLE", "Market history is insufficient for " + symbol + " on " + date + ".");
+        }
+        std::vector<float> features;
+        features.reserve(market_values->size());
+        for (const auto value : *market_values) features.push_back(static_cast<float>(value));
+        const auto probability = entry->model->predict(features);
+        const auto signal = probability > 0.55 ? "Bullish" : probability < 0.45 ? "Bearish" : "Neutral";
+        return {{"symbol", symbol}, {"date", date}, {"publication_cutoff", iso_time(std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{cutoff}})}, {"coverage_status", "complete"}, {"feature_schema_hash", "market-features-v1"}, {"features", boost::json::object{}}, {"articles", boost::json::array{}}, {"prediction", {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", entry->model_id}}}, {"model_validated", true}, {"model_versions", {{"xgboost", entry->model_id}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
     }
     if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[3] == "XLK" && (path[4] == "news" || path[4] == "nlp-features" || path[4] == "insights" || path[4] == "prediction")) {
         const auto date = query_value(target, "date");
@@ -432,6 +591,7 @@ http::response<http::string_body> handle(
     const arrakis::database::PostgresPool* database,
     const LiveMarketStore& market,
     const NewsXGBoostModel* model,
+    const MarketModelRegistry* market_models,
     bool model_validation_required,
     const arrakis::news::FinbertSession* finbert,
     RuntimeState& runtime,
@@ -475,7 +635,7 @@ http::response<http::string_body> handle(
     }
     unsigned status = 200;
     boost::json::value body;
-    try { body = route(database, market, model, model_validation_required, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
+    try { body = route(database, market, model, market_models, model_validation_required, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
     catch (const std::invalid_argument& error) { status = 400; body = error_json("INVALID_REQUEST", error.what()); }
     catch (const std::exception& error) { status = 500; body = error_json("INTERNAL_ERROR", error.what()); }
     http::response<http::string_body> response{static_cast<http::status>(status), request.version()};
@@ -567,6 +727,8 @@ int main() {
         auto database = connect_database();
         auto next_database_retry = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         LiveMarketStore market(env("ARRAKIS_ETF_UNIVERSE", "config/etf_universe.json"));
+        const auto market_models = std::make_unique<MarketModelRegistry>(
+            env("ARRAKIS_MARKET_MODEL_DIR"), market.etfs());
         std::jthread market_consumer([&market, &runtime](std::stop_token stop_token) {
             try {
                 arrakis::streaming::KafkaConsumer consumer(
@@ -647,7 +809,7 @@ int main() {
             }
             auto response = request.method() == http::verb::options
                 ? http::response<http::string_body>{http::status::no_content, request.version()}
-                : handle(database.get(), market, model.get(), model_validation_required, finbert.get(), runtime, request);
+                : handle(database.get(), market, model.get(), market_models.get(), model_validation_required, finbert.get(), runtime, request);
             if (request.method() == http::verb::options) runtime.api_requests.fetch_add(1);
             response.set(http::field::access_control_allow_origin, env("CORS_ALLOWED_ORIGINS", "http://localhost:3000"));
             response.set(http::field::access_control_allow_methods, "GET,OPTIONS");

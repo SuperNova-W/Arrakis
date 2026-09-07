@@ -185,6 +185,7 @@ struct Hyperparameters final {
 
 struct Options final {
     std::filesystem::path input;
+    std::string symbol{"XLK"};
     std::filesystem::path model_output{"artifacts/xlk_news_xgboost.json"};
     std::filesystem::path walk_forward_output{"artifacts/xlk_walk_forward.json"};
     std::filesystem::path monthly_walk_forward_output{
@@ -941,6 +942,8 @@ struct PredictionDiagnostics final {
 
         if (argument == "--input") {
             options.input = require_value();
+        } else if (argument == "--symbol") {
+            options.symbol = require_value();
         } else if (argument == "--model-output") {
             options.model_output = require_value();
         } else if (argument == "--walk-forward") {
@@ -1014,6 +1017,7 @@ struct PredictionDiagnostics final {
             std::cout
                 << "Usage: arrakis-train-xgboost --input <features.csv> [options]\n\n"
                 << "Options:\n"
+                << "  --symbol <ETF>                  Target ETF symbol recorded in the manifest\n"
                 << "  --target <name>                 Target column or target_high_volatility_next_day,\n"
                 << "                                  forward_return_3d_up, forward_return_5d_up,\n"
                 << "                                  forward_return_5d_open_to_close_up,\n"
@@ -2425,7 +2429,7 @@ void write_manifest(
         [](const auto& name) { return name.starts_with("embedding_"); }
     );
     const std::string default_schema = options.feature_subset == "market"
-                                           ? "xlk-market-features-v3"
+                                           ? "market-features-v1"
                                            : options.feature_subset == "logits-only"
                                                  ? "xlk-news-logits-only-features-v3"
                                                  : options.feature_subset == "news"
@@ -2439,12 +2443,22 @@ void write_manifest(
                                      std::getenv("ARRAKIS_FEATURE_SCHEMA_HASH") != nullptr
                                  ? std::string{std::getenv("ARRAKIS_FEATURE_SCHEMA_HASH")}
                                  : default_schema;
+    const bool market_model = options.feature_subset == "market";
+    const auto model_id = market_model ? options.symbol + "-market-xgboost-v1" : "xlk-finbert-xgboost-v1";
+    const auto manifest_symbol = market_model ? options.symbol : "XLK";
+    const auto recorded_dataset_path = market_model
+                                           ? std::filesystem::path{"generated"} / dataset_path.filename()
+                                           : dataset_path;
     output << std::fixed << std::setprecision(6)
            << "{\n"
-           << "  \"model_id\": \"xlk-finbert-xgboost-v1\",\n"
+           << "  \"model_id\": \"" << model_id << "\",\n"
            << "  \"model_type\": \"xgboost\",\n"
-           << "  \"symbol\": \"XLK\",\n"
-           << "  \"target\": \"" << options.target << "\",\n"
+           << "  \"symbol\": \"" << manifest_symbol << "\",\n";
+    if (market_model) {
+        output << "  \"promotion_eligible\": false,\n"
+               << "  \"deployment_status\": \"candidate\",\n";
+    }
+    output << "  \"target\": \"" << options.target << "\",\n"
            << "  \"target_definition\": \""
            << (options.target == "target_high_volatility_next_day"
                    ? "absolute next-session open-to-close return above the trailing 20-session median absolute open-to-close return"
@@ -2464,7 +2478,7 @@ void write_manifest(
            << "\",\n"
            << "  \"aggregation_version\": \"" << default_schema << "\",\n"
            << "  \"feature_schema_hash\": \"" << schema_hash << "\",\n"
-           << "  \"dataset_path\": \"" << dataset_path.string() << "\",\n"
+           << "  \"dataset_path\": \"" << recorded_dataset_path.string() << "\",\n"
            << "  \"dataset_sha256\": \"" << sha256_file(dataset_path) << "\",\n"
            << "  \"target_market_data\": \"" << options.market_data.string() << "\",\n"
            << "  \"target_benchmark_data\": \"" << options.benchmark_data.string() << "\",\n"
@@ -2502,6 +2516,9 @@ void write_manifest(
 int main(const int argc, char** argv) {
     try {
         const auto options = parse_options(argc, argv);
+        if (options.symbol.empty()) {
+            throw std::invalid_argument{"--symbol must not be empty"};
+        }
         if (options.ablation) {
             run_ablation(options);
             return 0;

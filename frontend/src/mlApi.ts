@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 
-// The XLK research document is produced by the hourly GitHub Actions pipeline
+// Per-ETF research documents are produced by the hourly GitHub Actions pipeline
 // (.github/workflows/hourly-signal.yml) and stored in Supabase. The browser
-// reads it back directly through the `public_research_signal_latest` view using
-// the anon key -- there is no always-on backend, and the whole deployment costs
-// $0/month. See backend/docs/zero-cost-deployment.md.
+// reads them back directly through the `public_research_signal_latest` view
+// using the anon key -- there is no always-on backend, and the whole deployment
+// costs $0/month. See backend/docs/zero-cost-deployment.md.
 //
 // Plain fetch against PostgREST rather than @supabase/supabase-js: this is a
 // single filtered GET against one read-only view, and the client library would

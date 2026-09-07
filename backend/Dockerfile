@@ -55,6 +55,7 @@ COPY --from=builder /src/build/container/daily-bar-loader /opt/arrakis/daily-bar
 COPY config /opt/arrakis/config
 COPY tests/fixtures /opt/arrakis/fixtures
 COPY artifacts /opt/arrakis/artifacts
+COPY deploy/market_models /opt/arrakis/deploy/market_models
 COPY models /opt/arrakis/models
 WORKDIR /opt/arrakis
 EXPOSE 8080

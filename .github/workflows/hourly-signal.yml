@@ -1,4 +1,4 @@
-name: Hourly XLK signal
+name: Hourly ETF signal
 
 # Zero-cost production deployment.
 #
@@ -7,8 +7,9 @@ name: Hourly XLK signal
 #
 # Each run stands up the real pipeline (ephemeral Kafka + FinBERT ONNX + the
 # market-api inference route) against a DURABLE Supabase PostgreSQL, produces one
-# XLK research document, and upserts it into research_signals. The browser reads
-# that back through the public_research_signal_latest view with the anon key.
+# XLK news research document plus one market-model document for every other ETF,
+# and upserts them into research_signals. The browser reads those back through
+# the public_research_signal_latest view with the anon key.
 # There is no always-on server anywhere in the system.
 #
 # Supabase must be the pipeline's database, not an ephemeral container: the news
@@ -57,7 +58,7 @@ env:
 
 jobs:
   signal:
-    name: Publish XLK research document
+    name: Publish ETF research documents
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -104,6 +105,8 @@ jobs:
       # bar, and AGENTS.md forbids presenting a prediction without that evidence.
       # Flip this to 'true' only when a target clears it.
       ARRAKIS_XLK_NEWS_MODEL_VALIDATED: 'false'
+      ARRAKIS_MARKET_MODEL_DIR: ${{ github.workspace }}/backend/deploy/market_models
+      ARRAKIS_DAILY_BAR_SYMBOLS: 'XLC,XLY,XLP,XLE,XLF,XLV,XLI,XLB,XLRE,XLK,XLU,SPY,QQQ,IWM,TLT,HYG,GLD,USO'
       ARRAKIS_FINBERT_VERSION: finbert-v1
       ARRAKIS_FINBERT_TOKENIZER_VERSION: finbert-tokenizer-v1
       ARRAKIS_FINBERT_MAX_TOKENS: '128'
@@ -297,7 +300,7 @@ jobs:
           HISTORY_END_UTC: ${{ steps.window.outputs.history_end_iso }}
         run: |
           set -euo pipefail
-          for symbol in XLK SPY; do
+          for symbol in XLC XLY XLP XLE XLF XLV XLI XLB XLRE XLK XLU SPY QQQ IWM TLT HYG GLD USO; do
             ./build/ci/fetch-historical-data \
               --symbol "$symbol" \
               --resolution D \
@@ -403,9 +406,36 @@ jobs:
           ARRAKIS_SIGNAL_OUT_DIR=/tmp/signals \
           ARRAKIS_SIGNAL_RUN_KIND="${{ steps.window.outputs.run_kind }}" \
           ARRAKIS_SIGNAL_WINDOW_START_ISO="${{ steps.window.outputs.window_start_iso }}" \
+          ARRAKIS_SIGNAL_CUTOFF_ISO="${{ steps.window.outputs.cutoff_iso }}" \
           ARRAKIS_MARKET_API_URL="http://127.0.0.1:8080" \
             ./scripts/export_daily_signal.sh
           ./scripts/publish_signal_supabase.sh "/tmp/signals/${{ steps.window.outputs.date }}.json"
+
+      - name: Export and publish per-ETF market model candidates
+        if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        working-directory: backend
+        env:
+          ARRAKIS_MARKET_MODEL_DIR: ${{ github.workspace }}/backend/deploy/market_models
+          ARRAKIS_SIGNAL_SYMBOLS: 'XLC XLY XLP XLE XLF XLV XLI XLB XLRE XLU SPY QQQ IWM TLT HYG GLD USO'
+          ARRAKIS_SIGNAL_DATE: ${{ steps.window.outputs.date }}
+          ARRAKIS_SIGNAL_OUT_DIR: /tmp/signals
+          ARRAKIS_SIGNAL_RUN_KIND: ${{ steps.window.outputs.run_kind }}
+          ARRAKIS_SIGNAL_WINDOW_START_ISO: ${{ steps.window.outputs.window_start_iso }}
+          ARRAKIS_SIGNAL_CUTOFF_ISO: ${{ steps.window.outputs.cutoff_iso }}
+          ARRAKIS_MARKET_API_URL: http://127.0.0.1:8080
+        run: |
+          set -euo pipefail
+          ./build/ci/market-api & api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health
+          ./scripts/export_market_signals.sh
+          for symbol in $ARRAKIS_SIGNAL_SYMBOLS; do
+            ./scripts/publish_signal_supabase.sh "/tmp/signals/${symbol}-${ARRAKIS_SIGNAL_DATE}.json"
+          done
 
       - name: Record run outcome for the keepalive job
         if: always()
