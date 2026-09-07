@@ -285,8 +285,10 @@ function Metric({ label, value, tone = '' }: { label: string; value: string; ton
 }
 
 function Recommendation() {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const ml = useMlRecommendation(date)
+  const [symbol, setSymbol] = useState('XLK')
+  const [date, setDate] = useState(currentMarketDate())
+  const ml = useMlRecommendation(date, symbol, true)
+  const document = ml.news.data ?? ml.insights.data ?? ml.prediction.data
   const prediction = ml.prediction.data?.prediction
   const news = ml.news.data ?? ml.insights.data
   const error = ml.prediction.error ?? ml.news.error ?? ml.insights.error
@@ -294,11 +296,11 @@ function Recommendation() {
   // An intraday document is point-in-time correct but out-of-distribution: it
   // sees only part of the day's news. Never present it as equivalent evidence
   // to the post-close signal of record.
-  const document = ml.news.data ?? ml.insights.data ?? ml.prediction.data
   const provisional = document != null && document.run_kind === 'intraday'
 
   return <>
     <Topbar eyebrow="RESEARCH / MODEL INSIGHTS" title="Recommendations">
+      <label className="date-control"><span>ETF</span><select value={symbol} onChange={event => setSymbol(event.target.value)}>{ETF_UNIVERSE.map(etf => <option key={etf.symbol} value={etf.symbol}>{etf.symbol} · {etf.name}</option>)}</select></label>
       <label className="date-control"><span>Prediction date</span><input type="date" value={date} onChange={event => setDate(event.target.value)}/></label>
       <button className="outline-btn" onClick={ml.refresh}>Refresh</button>
     </Topbar>
@@ -306,7 +308,7 @@ function Recommendation() {
     {provisional && <div className="inline-warning"><AlertTriangle size={14}/>Provisional intraday reading, generated at {ml.news.data?.generated_at ? new Date(ml.news.data.generated_at).toLocaleString() : 'an earlier time'}. It covers only part of the trading day&apos;s news, whereas every training observation saw a full day up to the 16:00 ET close, so its features sit outside the distribution the model was fitted on. The post-close run is the signal of record.</div>}
     {ml.loading ? <div className="panel recommendation-page"><div className="chart-placeholder large"/></div> : error && !prediction && !news ? <MlErrorState error={error} retry={ml.refresh}/> : <section className="recommendation-layout">
       <div className="panel insight-panel">
-        <div className="panel-head"><div><div className="eyebrow">XLK · {date}</div><h2>Model recommendation</h2></div>{prediction && <span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span>}</div>
+        <div className="panel-head"><div><div className="eyebrow">{symbol} · {document?.date ?? date}</div><h2>Model recommendation</h2></div>{prediction && <span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span>}</div>
         {noValidatedModel ? <div className="empty-state"><AlertTriangle size={18}/><div><h2>No validated model</h2><p>{formatMlError(ml.prediction.error!)}</p><small className="mono">{ml.prediction.error!.code}</small></div></div> : prediction ? <>
           <div className="insight-primary"><strong>{(prediction.probability_positive_return * 100).toFixed(1)}%</strong><span>probability of next close up</span></div>
           <div className="confidence-track"><i style={{ width: `${Math.max(0, Math.min(100, prediction.probability_positive_return * 100))}%` }}/></div>
