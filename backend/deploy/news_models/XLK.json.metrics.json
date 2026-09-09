@@ -6,23 +6,24 @@
   "test_rows": 249,
   "evaluation_split": "test",
   "accuracy": 0.578313,
-  "log_loss": 0.679620,
-  "roc_auc": 0.540079,
+  "log_loss": 0.681441,
+  "roc_auc": 0.494213,
   "positive_rate": 0.578313,
-  "mean_probability": 0.583643,
+  "mean_probability": 0.586122,
   "selected_best_iteration": 1,
-  "rounds_run": 26,
-  "best_validation_logloss": 0.710829,
-  "early_stopping_rounds": 25,
-  "hyperparameter_search_candidates": 72,
+  "rounds_run": 21,
+  "best_validation_logloss": 0.712712,
+  "early_stopping_rounds": 20,
+  "hyperparameter_search_candidates": 0,
   "hyperparameters": {
-    "eta": 0.100000,
-    "max_depth": 4,
+    "eta": 0.050000,
+    "max_depth": 3,
     "min_child_weight": 1,
-    "subsample": 1.000000,
-    "colsample_bytree": 1.000000,
+    "subsample": 0.800000,
+    "colsample_bytree": 0.800000,
     "lambda": 1.000000,
-    "alpha": 0.000000
+    "alpha": 0.000000,
+    "seed": 42
   },
   "validation_start": "2021-01-04",
   "validation_end": "2022-12-30",
@@ -31,18 +32,18 @@
   "validation": {
     "rows": 503,
     "accuracy": 0.489066,
-    "log_loss": 0.710829,
-    "roc_auc": 0.525648,
+    "log_loss": 0.712712,
+    "roc_auc": 0.485416,
     "positive_rate": 0.489066,
-    "mean_probability": 0.583329
+    "mean_probability": 0.586450
   },
   "validation_prediction_diagnostics":   {
-    "min": 0.542412,
-    "max": 0.619150,
-    "mean": 0.583329,
-    "stddev": 0.015770,
+    "min": 0.567581,
+    "max": 0.599335,
+    "mean": 0.586450,
+    "stddev": 0.007408,
     "constant_prediction": false,
-    "histogram_10_buckets": [0, 0, 0, 0, 0, 472, 31, 0, 0, 0],
+    "histogram_10_buckets": [0, 0, 0, 0, 0, 503, 0, 0, 0, 0],
     "confusion_matrix": {
       "true_negative": 0,
       "false_positive": 257,
@@ -57,18 +58,18 @@
   "test": {
     "rows": 249,
     "accuracy": 0.578313,
-    "log_loss": 0.679620,
-    "roc_auc": 0.540079,
+    "log_loss": 0.681441,
+    "roc_auc": 0.494213,
     "positive_rate": 0.578313,
-    "mean_probability": 0.583643
+    "mean_probability": 0.586122
   },
   "test_prediction_diagnostics":   {
-    "min": 0.542412,
-    "max": 0.619150,
-    "mean": 0.583643,
-    "stddev": 0.012526,
+    "min": 0.567581,
+    "max": 0.599335,
+    "mean": 0.586122,
+    "stddev": 0.007175,
     "constant_prediction": false,
-    "histogram_10_buckets": [0, 0, 0, 0, 0, 246, 3, 0, 0, 0],
+    "histogram_10_buckets": [0, 0, 0, 0, 0, 249, 0, 0, 0, 0],
     "confusion_matrix": {
       "true_negative": 0,
       "false_positive": 105,
@@ -85,19 +86,19 @@
       "year": 2021,
       "rows": 252,
       "accuracy": 0.523810,
-      "log_loss": 0.698690,
-      "roc_auc": 0.546275,
+      "log_loss": 0.700971,
+      "roc_auc": 0.469855,
       "positive_rate": 0.523810,
-      "mean_probability": 0.586786
+      "mean_probability": 0.586681
     },
     {
       "year": 2022,
       "rows": 251,
       "accuracy": 0.454183,
-      "log_loss": 0.723016,
-      "roc_auc": 0.487482,
+      "log_loss": 0.724500,
+      "roc_auc": 0.503714,
       "positive_rate": 0.454183,
-      "mean_probability": 0.579859
+      "mean_probability": 0.586218
     }
   ],
   "test_by_year":   [
@@ -105,10 +106,10 @@
       "year": 2023,
       "rows": 249,
       "accuracy": 0.578313,
-      "log_loss": 0.679620,
-      "roc_auc": 0.540079,
+      "log_loss": 0.681441,
+      "roc_auc": 0.494213,
       "positive_rate": 0.578313,
-      "mean_probability": 0.583643
+      "mean_probability": 0.586122
     }
   ]
 }

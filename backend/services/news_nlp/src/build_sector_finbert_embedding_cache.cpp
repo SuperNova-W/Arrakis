@@ -153,6 +153,7 @@ struct ShardConfig final {
     const auto sector_index = column_index(header, "sector");
     const auto symbol_index = column_index(header, "symbol");
     const auto title_index = column_index(header, "title");
+    const auto summary_index = column_index(header, "summary");
     const auto hash_index = column_index(header, "content_hash");
 
     ScanResult result;
@@ -163,13 +164,13 @@ struct ShardConfig final {
         if (fields.empty()) break;
         ++result.rows_read;
         const auto max_index = std::max(
-            {published_index, date_index, sector_index, symbol_index, title_index, hash_index}
+            {published_index, date_index, sector_index, symbol_index, title_index, summary_index, hash_index}
         );
         if (fields.size() <= max_index) continue;
         const auto& date = fields[date_index];
         const auto& sector = fields[sector_index];
         const auto& symbol = fields[symbol_index];
-        const auto& headline = fields[title_index];
+        const auto& headline = fields[title_index] + " " + fields[summary_index];
         const auto& hash = fields[hash_index];
         if (date < from_date || date > to_date || sector.empty() || symbol.empty() ||
             headline.empty() || hash.empty()) {

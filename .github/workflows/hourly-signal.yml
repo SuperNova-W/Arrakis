@@ -7,7 +7,8 @@ name: Hourly ETF signal
 #
 # Each run stands up the real pipeline (ephemeral Kafka + FinBERT ONNX + the
 # market-api inference route) against a DURABLE Supabase PostgreSQL, produces one
-# XLK news research document plus one market-model document for every other ETF,
+# FinBERT + XGBoost research document for every configured sector ETF plus one
+# market-model document for each context ETF,
 # and upserts them into research_signals. The browser reads those back through
 # the public_research_signal_latest view with the anon key.
 # There is no always-on server anywhere in the system.
@@ -103,13 +104,14 @@ jobs:
       ARRAKIS_KAFKA_CREATE_TOPICS: 'true'
       # Enable the selected personal-project forecast independently of research
       # promotion. Keep validation metadata truthful.
-      ARRAKIS_XLK_NEWS_MODEL_VALIDATED: 'false'
-      ARRAKIS_XLK_NEWS_MODEL_ENABLED: 'true'
+      ARRAKIS_NEWS_MODEL_VALIDATED: 'false'
+      ARRAKIS_NEWS_MODEL_ENABLED: 'true'
+      ARRAKIS_NEWS_MODEL_DIR: ${{ github.workspace }}/backend/deploy/news_models
       ARRAKIS_MARKET_MODEL_DIR: ${{ github.workspace }}/backend/deploy/market_models
       ARRAKIS_DAILY_BAR_SYMBOLS: 'XLC,XLY,XLP,XLE,XLF,XLV,XLI,XLB,XLRE,XLK,XLU,SPY,QQQ,IWM,TLT,HYG,GLD,USO'
       ARRAKIS_FINBERT_VERSION: finbert-v1
       ARRAKIS_FINBERT_TOKENIZER_VERSION: finbert-tokenizer-v1
-      ARRAKIS_FINBERT_MAX_TOKENS: '128'
+      ARRAKIS_FINBERT_MAX_TOKENS: '64'
 
     steps:
       - name: Install toolchain and runtime dependencies
@@ -273,10 +275,13 @@ jobs:
           base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${MODELS_RELEASE_TAG}"
           mkdir -p models/finbert artifacts
           [ -f models/finbert/model.onnx ] || curl -fsSL "$base/model.onnx" -o models/finbert/model.onnx
+          [ -f models/finbert/model_with_pooled_embedding.onnx ] || curl -fsSL "$base/model_with_pooled_embedding.onnx" -o models/finbert/model_with_pooled_embedding.onnx
           [ -f models/finbert/vocab.txt  ] || curl -fsSL "$base/vocab.txt"  -o models/finbert/vocab.txt
-          bash scripts/verify_news_model.sh
           g++ -std=c++20 tests/news_model_runtime_test.cpp -lxgboost -o /tmp/arrakis-news-model-check
-          OMP_NUM_THREADS=1 /tmp/arrakis-news-model-check deploy/news_models/XLK.json deploy/news_models/XLK.json.test_features.csv
+          for symbol in XLB XLC XLE XLF XLI XLK XLP XLRE XLU XLV XLY; do
+            bash scripts/verify_news_model.sh "deploy/news_models/${symbol}.json"
+            OMP_NUM_THREADS=1 /tmp/arrakis-news-model-check "deploy/news_models/${symbol}.json" "deploy/news_models/${symbol}.json.test_features.csv"
+          done
           # Integrity: verify against the digests pinned in manifest.json,
           # whether the files came from the cache or the release.
           expected_model=$(jq -r '.model_sha256'      models/finbert/manifest.json)
@@ -285,6 +290,9 @@ jobs:
           actual_vocab=$(sha256sum models/finbert/vocab.txt  | cut -d' ' -f1)
           [ "$expected_model" = "$actual_model" ] || { echo "::error::FinBERT model.onnx sha256 mismatch." >&2; exit 1; }
           [ "$expected_vocab" = "$actual_vocab" ] || { echo "::error::FinBERT vocab.txt sha256 mismatch." >&2; exit 1; }
+          actual_pooled=$(sha256sum models/finbert/model_with_pooled_embedding.onnx | cut -d' ' -f1)
+          expected_pooled=$(jq -r '.derived_embedding_model_sha256' models/finbert/manifest.json)
+          [ "$expected_pooled" = "$actual_pooled" ] || { echo "::error::FinBERT pooled graph sha256 mismatch." >&2; exit 1; }
           echo "Model artifacts verified against manifest.json."
 
       - name: Refresh daily market history
@@ -341,28 +349,32 @@ jobs:
           XLK_HOLDINGS_HISTORY: ${{ github.workspace }}/backend/data/metadata/xlk_holdings_history.csv
         run: |
           set -euo pipefail
-          timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-once XLK 2>&1 | tee /tmp/ingest.log
+          for symbol in XLB XLC XLE XLF XLI XLK XLP XLRE XLU XLV XLY; do
+            timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-once "$symbol" 2>&1 | tee -a /tmp/ingest.log
+          done
 
       - name: Enrich with FinBERT and build daily features
         if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
         working-directory: backend
         # Require a successful, complete one-shot enrichment before publication.
         env:
-          ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model.onnx
+          ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model_with_pooled_embedding.onnx
           ARRAKIS_FINBERT_VOCAB_PATH: ${{ github.workspace }}/backend/models/finbert/vocab.txt
+          ARRAKIS_FINBERT_MAX_TOKENS: '64'
           NEWS_TRADING_DATE: ${{ steps.window.outputs.date }}
           NEWS_PREDICTION_CUTOFF_UNIX_MS: ${{ steps.window.outputs.cutoff_ms }}
           NEWS_PREDICTION_CUTOFF_ISO: ${{ steps.window.outputs.cutoff_iso }}
           NEWS_PREDICTION_WINDOW_START_UNIX_MS: ${{ steps.window.outputs.window_start_ms }}
           NEWS_ENRICHER_ONCE: 'true'
           NEWS_ENRICHER_IDLE_POLLS: '10'
+          NEWS_TARGET_SYMBOLS: 'XLB XLC XLE XLF XLI XLK XLP XLRE XLU XLV XLY'
         run: |
           set -euo pipefail
           timeout --signal=INT 900 ./build/ci/news-enricher 2>&1 | tee /tmp/enrich.log
           count=$(psql "$SUPABASE_DB_URL" -tAc \
-            "SELECT count(*) FROM etf_daily_news_features WHERE symbol='XLK' AND trading_date='${{ steps.window.outputs.date }}'")
-          if [ "$count" = "0" ]; then
-            echo "::error::news-enricher produced no feature row for ${{ steps.window.outputs.date }}." >&2
+            "SELECT count(DISTINCT symbol) FROM etf_daily_news_features WHERE symbol IN ('XLB','XLC','XLE','XLF','XLI','XLK','XLP','XLRE','XLU','XLV','XLY') AND trading_date='${{ steps.window.outputs.date }}'")
+          if [ "$count" != "11" ]; then
+            echo "::error::news-enricher produced $count of 11 sector feature rows for ${{ steps.window.outputs.date }}." >&2
             tail -50 /tmp/enrich.log >&2
             exit 1
           fi
@@ -371,9 +383,11 @@ jobs:
         if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
         working-directory: backend
         env:
-          ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model.onnx
+          ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model_with_pooled_embedding.onnx
           ARRAKIS_FINBERT_VOCAB_PATH: ${{ github.workspace }}/backend/models/finbert/vocab.txt
-          ARRAKIS_XLK_NEWS_MODEL_PATH: ${{ github.workspace }}/backend/deploy/news_models/XLK.json
+          ARRAKIS_FINBERT_MAX_TOKENS: '64'
+          ARRAKIS_NEWS_MODEL_DIR: ${{ github.workspace }}/backend/deploy/news_models
+          ARRAKIS_NEWS_MODEL_ENABLED: 'true'
           ARRAKIS_ETF_UNIVERSE: ${{ github.workspace }}/backend/config/etf_universe.json
           MARKET_API_PORT: '8080'
         run: |
@@ -385,14 +399,17 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:8080/health
-          ARRAKIS_SIGNAL_DATE="${{ steps.window.outputs.date }}" \
-          ARRAKIS_SIGNAL_OUT_DIR=/tmp/signals \
-          ARRAKIS_SIGNAL_RUN_KIND="${{ steps.window.outputs.run_kind }}" \
-          ARRAKIS_SIGNAL_WINDOW_START_ISO="${{ steps.window.outputs.window_start_iso }}" \
-          ARRAKIS_SIGNAL_CUTOFF_ISO="${{ steps.window.outputs.cutoff_iso }}" \
-          ARRAKIS_MARKET_API_URL="http://127.0.0.1:8080" \
-            ./scripts/export_daily_signal.sh
-          ./scripts/publish_signal_supabase.sh "/tmp/signals/${{ steps.window.outputs.date }}.json"
+          for symbol in XLB XLC XLE XLF XLI XLK XLP XLRE XLU XLV XLY; do
+            ARRAKIS_SIGNAL_SYMBOL="$symbol" \
+            ARRAKIS_SIGNAL_DATE="${{ steps.window.outputs.date }}" \
+            ARRAKIS_SIGNAL_OUT_DIR=/tmp/signals \
+            ARRAKIS_SIGNAL_RUN_KIND="${{ steps.window.outputs.run_kind }}" \
+            ARRAKIS_SIGNAL_WINDOW_START_ISO="${{ steps.window.outputs.window_start_iso }}" \
+            ARRAKIS_SIGNAL_CUTOFF_ISO="${{ steps.window.outputs.cutoff_iso }}" \
+            ARRAKIS_MARKET_API_URL="http://127.0.0.1:8080" \
+              ./scripts/export_daily_signal.sh
+            ./scripts/publish_signal_supabase.sh "/tmp/signals/${symbol}-${{ steps.window.outputs.date }}.json"
+          done
 
       - name: Export and publish per-ETF market model candidates
         if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'

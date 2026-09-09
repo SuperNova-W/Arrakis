@@ -2444,8 +2444,8 @@ void write_manifest(
                                  ? std::string{std::getenv("ARRAKIS_FEATURE_SCHEMA_HASH")}
                                  : default_schema;
     const bool market_model = options.feature_subset == "market";
-    const auto model_id = market_model ? options.symbol + "-market-xgboost-v1" : "xlk-finbert-xgboost-v1";
-    const auto manifest_symbol = market_model ? options.symbol : "XLK";
+    const auto model_id = market_model ? options.symbol + "-market-xgboost-v1" : options.symbol + "-finbert-xgboost-v1";
+    const auto manifest_symbol = options.symbol;
     const auto recorded_dataset_path = market_model
                                            ? std::filesystem::path{"generated"} / dataset_path.filename()
                                            : dataset_path;
@@ -2454,9 +2454,36 @@ void write_manifest(
            << "  \"model_id\": \"" << model_id << "\",\n"
            << "  \"model_type\": \"xgboost\",\n"
            << "  \"symbol\": \"" << manifest_symbol << "\",\n";
+    output << "  \"model_sha256\": \"" << sha256_file(model_path) << "\",\n"
+           << "  \"finbert_model_sha256\": \""
+           << (std::getenv("ARRAKIS_FINBERT_MODEL_SHA256") == nullptr ? "" : std::getenv("ARRAKIS_FINBERT_MODEL_SHA256"))
+           << "\",\n"
+           << "  \"tokenizer_sha256\": \""
+           << (std::getenv("ARRAKIS_FINBERT_TOKENIZER_SHA256") == nullptr ? "" : std::getenv("ARRAKIS_FINBERT_TOKENIZER_SHA256"))
+           << "\",\n"
+           << "  \"finbert_runtime_model_sha256\": \""
+           << (std::getenv("ARRAKIS_FINBERT_RUNTIME_MODEL_SHA256") == nullptr
+                   ? ""
+                   : std::getenv("ARRAKIS_FINBERT_RUNTIME_MODEL_SHA256"))
+           << "\",\n"
+           << "  \"news_input_cap\": "
+           << (std::getenv("ARRAKIS_NEWS_INPUT_CAP") == nullptr
+                   ? "0"
+                   : std::getenv("ARRAKIS_NEWS_INPUT_CAP"))
+           << ",\n"
+           << "  \"news_input_sampling\": \""
+           << (std::getenv("ARRAKIS_NEWS_INPUT_SAMPLING") == nullptr
+                   ? "full_normalized_panel"
+                   : std::getenv("ARRAKIS_NEWS_INPUT_SAMPLING"))
+           << "\",\n";
     if (market_model) {
         output << "  \"promotion_eligible\": false,\n"
                << "  \"deployment_status\": \"candidate\",\n";
+    } else {
+        output << "  \"promotion_eligible\": false,\n"
+               << "  \"deployment_status\": \"experimental\",\n"
+               << "  \"model_validated\": false,\n"
+               << "  \"runtime_feature_schema_hash\": \"xlk-combined-features-v2\",\n";
     }
     output << "  \"target\": \"" << options.target << "\",\n"
            << "  \"target_definition\": \""

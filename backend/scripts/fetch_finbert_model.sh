@@ -5,8 +5,10 @@ backend_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 model_dir=${ARRAKIS_FINBERT_DIR:-"$backend_root/models/finbert"}
 model_url=${ARRAKIS_FINBERT_MODEL_URL:-}
 vocab_url=${ARRAKIS_FINBERT_VOCAB_URL:-}
+pooled_model_url=${ARRAKIS_FINBERT_POOLED_MODEL_URL:-}
 model_sha=${ARRAKIS_FINBERT_MODEL_SHA256:-4a8d58ba2f8d74c7fca30fdb49fbbe367b64760104b64e8623e896a007229a6e}
 vocab_sha=${ARRAKIS_FINBERT_VOCAB_SHA256:-07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3}
+pooled_model_sha=${ARRAKIS_FINBERT_POOLED_MODEL_SHA256:-c7f8304257b2a587d9d9b348410b3809cc9403da909cc0331a63294426e4205a}
 
 if [ -z "$model_url" ] || [ -z "$vocab_url" ]; then
     echo "Set ARRAKIS_FINBERT_MODEL_URL and ARRAKIS_FINBERT_VOCAB_URL to the versioned exact Arrakis export." >&2
@@ -40,4 +42,7 @@ download_verified() {
 
 download_verified "$model_url" "$model_sha" "$model_dir/model.onnx"
 download_verified "$vocab_url" "$vocab_sha" "$model_dir/vocab.txt"
+if [ -n "$pooled_model_url" ]; then
+    download_verified "$pooled_model_url" "$pooled_model_sha" "$model_dir/model_with_pooled_embedding.onnx"
+fi
 echo "Fetched and verified Arrakis FinBERT artifacts in $model_dir"

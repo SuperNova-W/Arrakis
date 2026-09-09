@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -76,9 +77,24 @@ std::string iso_from_ms(std::int64_t value) {
 
 int main() {
     try {
+        std::vector<std::string> target_symbols;
+        const auto configured_symbols = env("NEWS_TARGET_SYMBOLS", env("NEWS_TARGET_SYMBOL", "XLK"));
+        std::string configured_symbol;
+        for (const auto character : configured_symbols) {
+            if (character == ',' || character == ' ' || character == '\t') {
+                if (!configured_symbol.empty()) { target_symbols.push_back(configured_symbol); configured_symbol.clear(); }
+            } else {
+                configured_symbol.push_back(character);
+            }
+        }
+        if (!configured_symbol.empty()) target_symbols.push_back(configured_symbol);
+        if (target_symbols.empty()) throw std::invalid_argument("NEWS_TARGET_SYMBOLS must contain at least one ETF");
+        const auto is_target = [&](const std::string& symbol) {
+            return contains(target_symbols, symbol);
+        };
         arrakis::database::PostgresPool database(arrakis::database::database_config_from_environment());
         arrakis::news::FinbertSession finbert(env("ARRAKIS_FINBERT_ONNX_PATH"), env("ARRAKIS_FINBERT_VOCAB_PATH"), env("ARRAKIS_FINBERT_VERSION", "finbert-v1"), env("ARRAKIS_FINBERT_TOKENIZER_VERSION", "finbert-tokenizer-v1"), static_cast<std::size_t>(std::stoul(env("ARRAKIS_FINBERT_MAX_TOKENS", "128"))));
-        arrakis::streaming::KafkaConsumer consumer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), env("NEWS_CONSUMER_GROUP", "news-enricher-v1"), env("NEWS_RAW_TOPIC", "news.raw.articles"));
+        arrakis::streaming::KafkaConsumer consumer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), env("NEWS_CONSUMER_GROUP", "news-enricher-all-sectors"), env("NEWS_RAW_TOPIC", "news.raw.articles"));
         arrakis::streaming::KafkaProducer producer(env("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), "news-enricher-v1");
         // Inclusive lower bound on publication time, matching the one-day
         // grouping the batch dataset builder uses. Without it the aggregate
@@ -92,22 +108,23 @@ int main() {
         const bool fixed_window = configured_cutoff > 0 && !configured_date.empty() && !configured_cutoff_iso.empty();
         const bool run_once = env("NEWS_ENRICHER_ONCE") == "true";
         const auto idle_polls_before_exit = static_cast<std::size_t>(env_int("NEWS_ENRICHER_IDLE_POLLS", 10));
-        std::vector<arrakis::news::EnrichedArticle> aggregate;
+        std::unordered_map<std::string, std::vector<arrakis::news::EnrichedArticle>> aggregates;
         std::string aggregate_date = configured_date;
-        const auto persist_daily = [&](const PredictionWindow& window) {
+        const auto persist_daily = [&](const PredictionWindow& window, const std::string& symbol) {
+            auto& aggregate = aggregates[symbol];
             const auto daily = arrakis::news::aggregate_daily(window.trading_date, window.cutoff_unix_ms, aggregate, window_start);
-            const auto xlk_bars = database.daily_market_bars("XLK", window.cutoff_unix_ms);
+            const auto target_bars = database.daily_market_bars(symbol, window.cutoff_unix_ms);
             const auto spy_bars = database.daily_market_bars("SPY", window.cutoff_unix_ms);
             std::vector<arrakis::news::MarketDay> xlk_days;
             std::vector<arrakis::news::MarketDay> spy_days;
-            xlk_days.reserve(xlk_bars.size());
+            xlk_days.reserve(target_bars.size());
             spy_days.reserve(spy_bars.size());
-            for (const auto& bar : xlk_bars) xlk_days.push_back({bar.trading_date, bar.close, bar.volume});
+            for (const auto& bar : target_bars) xlk_days.push_back({bar.trading_date, bar.close, bar.volume});
             for (const auto& bar : spy_bars) spy_days.push_back({bar.trading_date, bar.close, bar.volume});
             const auto market_values = arrakis::news::market_feature_vector(xlk_days, spy_days, window.trading_date);
             if (!market_values) throw std::runtime_error{"Persisted market history is insufficient for " + window.trading_date};
             const auto latest_iso = daily.latest_article_unix_ms > 0 ? iso_from_ms(daily.latest_article_unix_ms) : std::string{};
-            database.persist_daily_news_features("XLK", window.trading_date, window.cutoff_iso, latest_iso,
+            database.persist_daily_news_features(symbol, window.trading_date, window.cutoff_iso, latest_iso,
                                                  std::string{arrakis::news::kCombinedFeatureSchemaHash},
                                                  daily.to_combined_json(*market_values), static_cast<int>(aggregate.size()),
                                                  daily.coverage_status, "[]");
@@ -121,10 +138,10 @@ int main() {
                         ? PredictionWindow{configured_cutoff, configured_date, configured_cutoff_iso}
                         : current_window();
                     if (aggregate_date != window.trading_date) {
-                        aggregate.clear();
+                        aggregates.clear();
                         aggregate_date = window.trading_date;
                     }
-                    persist_daily(window);
+                    for (const auto& symbol : target_symbols) persist_daily(window, symbol);
                     producer.flush(std::chrono::seconds{10});
                     return EXIT_SUCCESS;
                 }
@@ -136,11 +153,15 @@ int main() {
                     ? PredictionWindow{configured_cutoff, configured_date, configured_cutoff_iso}
                     : current_window();
                 if (aggregate_date != window.trading_date) {
-                    aggregate.clear();
+                    aggregates.clear();
                     aggregate_date = window.trading_date;
                 }
                 const auto article = arrakis::news::deserialize_article(record->payload);
-                if (article.published_at_unix_ms > window.cutoff_unix_ms || article.published_at_unix_ms < window_start || !contains(article.entity_ids, "XLK")) { consumer.commit(*record); continue; }
+                std::string target_symbol;
+                for (const auto& entity : article.entity_ids) {
+                    if (is_target(entity)) { target_symbol = entity; break; }
+                }
+                if (article.published_at_unix_ms > window.cutoff_unix_ms || article.published_at_unix_ms < window_start || target_symbol.empty()) { consumer.commit(*record); continue; }
                 const auto outputs = finbert.infer({article.headline + "\n" + article.body});
                 if (outputs.size() != 1) throw std::runtime_error("FinBERT returned an unexpected batch size");
                 const auto& output = outputs.front();
@@ -148,10 +169,10 @@ int main() {
                 database.persist_news_article(database_article, article.normalized_content_hash, "{\"provider\":\"approved-source\"}");
                 database.persist_news_entities(article.article_id, article.entity_ids);
                 database.persist_news_features(article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, embedding_json(output.pooled_embedding), "xlk-news-features-v1", 0.0);
-                aggregate.push_back({article, {article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms}, 1.0, has_company_entity(article.entity_ids), false, true});
-                persist_daily(window);
+                aggregates[target_symbol].push_back({article, {article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms}, 1.0, has_company_entity(article.entity_ids), false, true});
+                persist_daily(window, target_symbol);
                 const auto enriched = arrakis::news::serialize_enriched_feature({article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms});
-                producer.publish(env("NEWS_ENRICHED_TOPIC", "news.enriched.features"), "XLK", enriched); producer.poll_events(std::chrono::milliseconds{0}); consumer.commit(*record);
+                producer.publish(env("NEWS_ENRICHED_TOPIC", "news.enriched.features"), target_symbol, enriched); producer.poll_events(std::chrono::milliseconds{0}); consumer.commit(*record);
             } catch (const std::exception& error) {
                 // A scheduled batch must not commit a partial daily snapshot as
                 // success after failed inference or persistence.

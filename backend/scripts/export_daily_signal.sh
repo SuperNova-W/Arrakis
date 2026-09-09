@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Export one day's XLK research signal as a static JSON document.
+# Export one day's sector research signal as a static JSON document.
 #
 # This is the last step of the zero-cost daily pipeline. By the time it runs,
 # news-enricher has written etf_daily_news_features for the trading date and
@@ -8,12 +8,12 @@
 # It queries the SAME public endpoints the browser used to call, so the static
 # document and the live API cannot drift in shape:
 #
-#   GET /api/v1/etfs/XLK/news?date=D      -> available once features exist
-#   GET /api/v1/etfs/XLK/insights?date=D  -> 200 with a prediction ONLY when a
+#   GET /api/v1/etfs/$ARRAKIS_SIGNAL_SYMBOL/news?date=D      -> available once features exist
+#   GET /api/v1/etfs/$ARRAKIS_SIGNAL_SYMBOL/insights?date=D  -> 200 with a prediction ONLY when a
 #                                            validated model is enabled, else
 #                                            503 NO_VALIDATED_MODEL
 #
-# Enable personal-project inference with ARRAKIS_XLK_NEWS_MODEL_ENABLED.
+# Enable personal-project inference with ARRAKIS_NEWS_MODEL_ENABLED.
 # Validation remains separate provenance; only NO_VALIDATED_MODEL is an
 # expected refusal when inference is disabled. Operational failures stop publication.
 set -euo pipefail
@@ -21,6 +21,7 @@ set -euo pipefail
 api_url=${ARRAKIS_MARKET_API_URL:-http://127.0.0.1:8080}
 signal_date=${ARRAKIS_SIGNAL_DATE:?ARRAKIS_SIGNAL_DATE must be set (YYYY-MM-DD)}
 out_dir=${ARRAKIS_SIGNAL_OUT_DIR:?ARRAKIS_SIGNAL_OUT_DIR must be set}
+signal_symbol=${ARRAKIS_SIGNAL_SYMBOL:-${ARRAKIS_SIGNAL_SYMBOLS:-XLK}}
 git_sha=${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 
 mkdir -p "$out_dir"
@@ -33,7 +34,7 @@ trap 'rm -f "$news_body" "$insights_body"' EXIT
 fetch() {
     curl --silent --show-error --max-time 30 \
         --output "$2" --write-out '%{http_code}' \
-        "${api_url}/api/v1/etfs/XLK/$1?date=${signal_date}"
+        "${api_url}/api/v1/etfs/${signal_symbol}/$1?date=${signal_date}"
 }
 
 news_status=$(fetch news "$news_body")
@@ -103,7 +104,7 @@ fi
 document=$(jq \
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg git_sha "$git_sha" \
-    --arg gate "${ARRAKIS_XLK_NEWS_MODEL_VALIDATED:-false}" \
+    --arg gate "${ARRAKIS_NEWS_MODEL_VALIDATED:-${ARRAKIS_XLK_NEWS_MODEL_VALIDATED:-false}}" \
     --arg run_kind "${ARRAKIS_SIGNAL_RUN_KIND:-intraday}" \
     --arg window_start "${ARRAKIS_SIGNAL_WINDOW_START_ISO:-}" \
     --arg run_url "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-local}/actions/runs/${GITHUB_RUN_ID:-0}" \
@@ -118,8 +119,12 @@ document=$(jq \
         pipeline_run:  $run_url
      }' <<<"$merged")
 
-printf '%s\n' "$document" >"${out_dir}/${signal_date}.json"
-printf '%s\n' "$document" >"${out_dir}/latest.json"
+printf '%s\n' "$document" >"${out_dir}/${signal_symbol}-${signal_date}.json"
+printf '%s\n' "$document" >"${out_dir}/${signal_symbol}-latest.json"
+if [ -z "${ARRAKIS_SIGNAL_SYMBOL:-}" ]; then
+    # Backward-compatible alias for local callers that predate multi-sector exports.
+    printf '%s\n' "$document" >"${out_dir}/latest.json"
+fi
 
 jq -r '"wrote \(.date) coverage=\(.coverage_status) articles=\(.articles | length) prediction=" +
        (if .prediction then .prediction.direction else "none (" + .prediction_error.code + ")" end)' \

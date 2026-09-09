@@ -14,6 +14,8 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -34,6 +36,7 @@ struct ArticleRow final {
     std::string published_at;
     std::string text;
     std::string content_hash;
+    std::string sector;
 };
 
 constexpr std::size_t kPooledEmbeddingDimensions = 768;
@@ -168,6 +171,80 @@ class FinbertCache final {
     std::ofstream index_output_;
 };
 
+// The all-sector cache is written by arrakis-build-sector-finbert-embedding-cache.
+// It keeps the 768-d pooled representation and the four sentiment values in
+// separate, append-only matrices so one inference pass can serve every ETF.
+class SectorFinbertCache final {
+  public:
+    explicit SectorFinbertCache(const std::filesystem::path& directory) {
+        const auto index_path = directory / "index.csv";
+        const auto embeddings_path = directory / "embeddings.f32";
+        const auto sentiment_path = directory / "sentiment.f32";
+        std::ifstream index_file{index_path};
+        if (!index_file) throw std::runtime_error{"Could not read sector FinBERT cache index"};
+        std::string line;
+        if (!std::getline(index_file, line) || line != "row,input_hash") {
+            throw std::runtime_error{"Sector FinBERT cache index schema is incompatible"};
+        }
+        std::vector<std::string> hashes;
+        while (std::getline(index_file, line)) {
+            if (line.empty()) continue;
+            const auto separator = line.find(',');
+            if (separator == std::string::npos || separator == 0 || separator + 1 >= line.size()) {
+                throw std::runtime_error{"Malformed sector FinBERT cache index row"};
+            }
+            const auto row = static_cast<std::size_t>(std::stoull(line.substr(0, separator)));
+            if (row != hashes.size()) throw std::runtime_error{"Sector FinBERT cache rows are not contiguous"};
+            hashes.push_back(line.substr(separator + 1));
+        }
+        const auto expected_embeddings = hashes.size() * kPooledEmbeddingDimensions * sizeof(float);
+        const auto expected_sentiment = hashes.size() * 4U * sizeof(float);
+        if (!std::filesystem::exists(embeddings_path) || !std::filesystem::exists(sentiment_path) ||
+            std::filesystem::file_size(embeddings_path) < expected_embeddings ||
+            std::filesystem::file_size(sentiment_path) < expected_sentiment) {
+            throw std::runtime_error{"Sector FinBERT cache matrices are missing or truncated"};
+        }
+        std::ifstream embeddings{embeddings_path, std::ios::binary};
+        std::ifstream sentiment{sentiment_path, std::ios::binary};
+        std::vector<float> embedding_values(hashes.size() * kPooledEmbeddingDimensions);
+        std::vector<float> sentiment_values(hashes.size() * 4U);
+        if (!embedding_values.empty() && !embeddings.read(
+                reinterpret_cast<char*>(embedding_values.data()),
+                static_cast<std::streamsize>(expected_embeddings))) {
+            throw std::runtime_error{"Could not read sector FinBERT embeddings"};
+        }
+        if (!sentiment_values.empty() && !sentiment.read(
+                reinterpret_cast<char*>(sentiment_values.data()),
+                static_cast<std::streamsize>(expected_sentiment))) {
+            throw std::runtime_error{"Could not read sector FinBERT sentiment values"};
+        }
+        values_.reserve(hashes.size());
+        for (std::size_t row = 0; row < hashes.size(); ++row) {
+            CachedFinbertOutput value;
+            value.positive_probability = sentiment_values[row * 4U];
+            value.negative_probability = sentiment_values[row * 4U + 1U];
+            value.neutral_probability = sentiment_values[row * 4U + 2U];
+            value.sentiment_score = sentiment_values[row * 4U + 3U];
+            for (std::size_t index = 0; index < kPooledEmbeddingDimensions; ++index) {
+                value.pooled_embedding[index] = embedding_values[row * kPooledEmbeddingDimensions + index];
+            }
+            rows_.emplace(hashes[row], row);
+            values_.push_back(value);
+        }
+    }
+
+    [[nodiscard]] std::optional<std::size_t> find(const std::string& input_hash) const {
+        const auto found = rows_.find(input_hash);
+        return found == rows_.end() ? std::nullopt : std::optional<std::size_t>{found->second};
+    }
+
+    [[nodiscard]] const CachedFinbertOutput& at(const std::size_t row) const { return values_.at(row); }
+
+  private:
+    std::unordered_map<std::string, std::size_t> rows_;
+    std::vector<CachedFinbertOutput> values_;
+};
+
 [[nodiscard]] std::size_t configured_inference_batch_size() {
     constexpr std::size_t default_batch_size = 64;
     const auto* value = std::getenv("ARRAKIS_FINBERT_INFERENCE_BATCH_SIZE");
@@ -278,7 +355,7 @@ class FinbertCache final {
     const std::filesystem::path& history_dir
 ) {
     std::map<std::string, std::map<std::string, Bar>> result;
-    for (const auto& symbol : {"XLK", "SPY", "QQQ", "IWM", "TLT", "HYG", "GLD", "USO"}) {
+    for (const auto& symbol : {"XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY", "SPY", "QQQ", "IWM", "TLT", "HYG", "GLD", "USO"}) {
         std::ifstream input{history_dir / (std::string{symbol} + ".csv")};
         if (!input) throw std::runtime_error{"Missing market history for " + std::string{symbol}};
         std::string line;
@@ -321,12 +398,13 @@ class FinbertCache final {
     const auto title_i = index("title");
     const auto summary_i = index("summary");
     const auto content_hash_i = index("content_hash");
+    const auto sector_i = index("sector");
     std::vector<ArticleRow> rows;
     for (auto fields = read_record(input); !fields.empty(); fields = read_record(input)) {
-        if (fields.size() <= std::max({date_i, published_i, title_i, summary_i, content_hash_i})) continue;
+        if (fields.size() <= std::max({date_i, published_i, title_i, summary_i, content_hash_i, sector_i})) continue;
         rows.push_back({
             fields[date_i], fields[published_i], fields[title_i] + " " + fields[summary_i],
-            fields[content_hash_i]
+            fields[content_hash_i], fields[sector_i]
         });
     }
     return rows;
@@ -334,6 +412,7 @@ class FinbertCache final {
 
 void write_combined_manifest(
     const std::filesystem::path& output_path,
+    const std::string& target_symbol,
     const std::filesystem::path& news_path,
     const std::filesystem::path& history_dir,
     const std::filesystem::path& model_path,
@@ -348,6 +427,7 @@ void write_combined_manifest(
     std::ofstream output{manifest_path};
     if (!output) throw std::runtime_error{"Could not create feature manifest"};
     output << "{\n"
+           << "  \"symbol\": \"" << target_symbol << "\",\n"
            << "  \"schema\": \""
            << arrakis::news::kCombinedFeatureSchemaHash << "\",\n"
            << "  \"news_schema\": \""
@@ -383,18 +463,21 @@ void write_combined_manifest(
 int main(int argc, char** argv) {
     try {
         if (argc < 4 || (argc - 4) % 2 != 0) throw std::invalid_argument{
-            "Usage: arrakis-build-xlk-combined <normalized-news.csv> <history-dir> "
-            "<output.csv> [--from YYYY-MM-DD --to YYYY-MM-DD --cache-dir <dir>]"};
+            "Usage: arrakis-build-sector-combined <normalized-news.csv> <history-dir> "
+            "<output.csv> [--symbol ETF --from YYYY-MM-DD --to YYYY-MM-DD --cache-dir <dir>]"};
         const auto news_path = std::filesystem::path{argv[1]};
         const auto history_dir = std::filesystem::path{argv[2]};
         const auto output_path = std::filesystem::path{argv[3]};
         std::string from_date{"2019-01-01"};
         std::string to_date{"2023-12-31"};
+        std::string target_symbol{"XLK"};
         std::filesystem::path cache_dir;
         for (int index = 4; index < argc; index += 2) {
             const std::string_view option{argv[index]};
             const std::string value{argv[index + 1]};
-            if (option == "--from") {
+            if (option == "--symbol") {
+                target_symbol = value;
+            } else if (option == "--from") {
                 from_date = value;
             } else if (option == "--to") {
                 to_date = value;
@@ -407,19 +490,24 @@ int main(int argc, char** argv) {
         if (from_date.empty() || to_date.empty() || from_date > to_date) {
             throw std::invalid_argument{"Builder date range is invalid"};
         }
+        static constexpr std::array<std::string_view, 11> sector_symbols{
+            "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"};
+        if (std::ranges::find(sector_symbols, target_symbol) == sector_symbols.end()) {
+            throw std::invalid_argument{"Unknown sector ETF: " + target_symbol};
+        }
         const auto model_path = std::getenv("ARRAKIS_FINBERT_ONNX_PATH") == nullptr
                                     ? "models/finbert/model_with_pooled_embedding.onnx"
                                     : std::getenv("ARRAKIS_FINBERT_ONNX_PATH");
         const auto vocab_path = std::getenv("ARRAKIS_FINBERT_VOCAB_PATH") == nullptr
                                     ? "models/finbert/vocab.txt"
                                     : std::getenv("ARRAKIS_FINBERT_VOCAB_PATH");
-        arrakis::news::FinbertSession finbert{model_path, vocab_path, "finbert-v1", "finbert-tokenizer-v1"};
+        arrakis::news::FinbertSession finbert{model_path, vocab_path, "finbert-v1", "finbert-tokenizer-v1", 64};
         if (!finbert.ready()) throw std::runtime_error{"FinBERT session is not ready"};
         const auto market = load_market(history_dir);
-        const auto& xlk_history = market.at("XLK");
+        const auto& target_history = market.at(target_symbol);
         std::vector<std::string> all_market_dates;
-        all_market_dates.reserve(xlk_history.size());
-        for (const auto& [date, unused] : xlk_history) {
+        all_market_dates.reserve(target_history.size());
+        for (const auto& [date, unused] : target_history) {
             static_cast<void>(unused);
             all_market_dates.push_back(date);
         }
@@ -433,6 +521,7 @@ int main(int argc, char** argv) {
         std::unordered_set<std::string> seen_content_hashes;
         seen_content_hashes.reserve(loaded_articles.size());
         for (const auto& article : loaded_articles) {
+            if (article.sector != target_symbol) continue;
             if (article.date < from_date || article.date > to_date) continue;
             // Apply the point-in-time publication cutoff before FinBERT inference.
             // This avoids spending CPU inference time on articles that cannot
@@ -449,7 +538,13 @@ int main(int argc, char** argv) {
         }
         std::map<std::string, std::vector<arrakis::news::EnrichedArticle>> enriched;
         const auto batch_size = configured_inference_batch_size();
-        FinbertCache cache{cache_dir};
+        std::unique_ptr<FinbertCache> cache;
+        std::unique_ptr<SectorFinbertCache> sector_cache;
+        if (!cache_dir.empty() && std::filesystem::exists(cache_dir / "embeddings.f32")) {
+            sector_cache = std::make_unique<SectorFinbertCache>(cache_dir);
+        } else {
+            cache = std::make_unique<FinbertCache>(cache_dir);
+        }
         std::vector<std::string> unique_texts;
         std::vector<std::string> unique_hashes;
         std::vector<std::size_t> article_unique_indices;
@@ -471,11 +566,22 @@ int main(int argc, char** argv) {
             unique_hashes.push_back(input_hash);
             article_unique_indices.push_back(unique_index);
             unique_outputs.emplace_back();
-            if (const auto cached = cache.find(input_hash); cached.has_value()) {
-                unique_outputs.back() = cache.at(*cached);
+            const auto cached = sector_cache != nullptr
+                                    ? sector_cache->find(input_hash)
+                                    : cache->find(input_hash);
+            if (cached.has_value()) {
+                unique_outputs.back() = sector_cache != nullptr
+                                            ? sector_cache->at(*cached)
+                                            : cache->at(*cached);
             } else {
                 pending_unique_indices.push_back(unique_index);
             }
+        }
+        if (sector_cache != nullptr && !pending_unique_indices.empty()) {
+            throw std::runtime_error{
+                "Sector FinBERT cache is missing " + std::to_string(pending_unique_indices.size()) +
+                " inputs (first hash " + unique_hashes[pending_unique_indices.front()] +
+                "); rerun the all-sector cache builder"};
         }
         bool embedding_output_present = true;
         for (std::size_t begin = 0; begin < pending_unique_indices.size(); begin += batch_size) {
@@ -493,9 +599,9 @@ int main(int argc, char** argv) {
                     embedding_output_present = false;
                 }
                 unique_outputs[unique_index] = cache_value(outputs[i - begin]);
-                if (cache.enabled()) {
-                    const auto cache_row = cache.append(unique_hashes[unique_index], unique_outputs[unique_index]);
-                    if (cache_row != unique_index && !cache.find(unique_hashes[unique_index]).has_value()) {
+                if (cache->enabled()) {
+                    const auto cache_row = cache->append(unique_hashes[unique_index], unique_outputs[unique_index]);
+                    if (cache_row != unique_index && !cache->find(unique_hashes[unique_index]).has_value()) {
                         throw std::runtime_error{"FinBERT cache row assignment changed unexpectedly"};
                     }
                 }
@@ -535,11 +641,11 @@ int main(int argc, char** argv) {
             output << ',' << name;
         }
         output << ",target_next_close_up\n";
-        const auto& xlk = xlk_history;
-        const auto xlk_days = market_days(xlk);
+        const auto& target = target_history;
+        const auto target_days = market_days(target);
         const auto spy_days = market_days(market.at("SPY"));
         std::vector<std::string> dates;
-        for (const auto& [date, unused] : xlk) {
+        for (const auto& [date, unused] : target) {
             static_cast<void>(unused);
             if (date < from_date || date > to_date) continue;
             dates.push_back(date);
@@ -547,9 +653,9 @@ int main(int argc, char** argv) {
         for (std::size_t row = 0; row + 1 < dates.size(); ++row) {
             const auto& date = dates[row];
             const auto& next_date = dates[row + 1];
-            const auto market_features = arrakis::news::market_feature_vector(xlk_days, spy_days, date);
+            const auto market_features = arrakis::news::market_feature_vector(target_days, spy_days, date);
             if (!market_features) continue;
-            const auto current_close = xlk.at(date).close;
+            const auto current_close = target.at(date).close;
             const auto news_cutoff = preopen_cutoff_ms(next_date);
             const auto daily = enriched.contains(date)
                                    ? arrakis::news::aggregate_daily(date, news_cutoff, std::move(enriched[date]))
@@ -559,10 +665,10 @@ int main(int argc, char** argv) {
             for (std::size_t index = 0; index < arrakis::news::kNewsFeatureCount; ++index) {
                 output << ',' << daily.values[index];
             }
-            output << ',' << (xlk.at(next_date).close > current_close ? 1 : 0) << '\n';
+            output << ',' << (target.at(next_date).close > current_close ? 1 : 0) << '\n';
         }
         write_combined_manifest(
-            output_path, news_path, history_dir, model_path, vocab_path, cache_dir, from_date, to_date,
+            output_path, target_symbol, news_path, history_dir, model_path, vocab_path, cache_dir, from_date, to_date,
             embedding_output_present
         );
         return 0;

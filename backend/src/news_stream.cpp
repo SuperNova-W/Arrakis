@@ -85,7 +85,7 @@ arrakis::news::Article parse(std::string_view line) {
 
 arrakis::news::Article from_finnhub(const arrakis::historical_data::NewsStory& story, std::string_view symbol) {
     arrakis::news::Article article;
-    article.canonical_url = story.url; article.source_id = story.source.empty() ? "finnhub-company-news" : story.source; article.headline = story.headline; article.body = story.summary; article.published_at_unix_ms = story.published_at_unix_seconds * 1000; article.retrieved_at_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); article.normalized_content_hash = sha256(article.headline + "\n" + article.body); article.article_id = "news:sha256:" + sha256(article.canonical_url + "\n" + article.normalized_content_hash); article.entity_ids = {std::string(symbol), "sector:technology"}; return article;
+    article.canonical_url = story.url; article.source_id = story.source.empty() ? "finnhub-company-news" : story.source; article.headline = story.headline; article.body = story.summary; article.published_at_unix_ms = story.published_at_unix_seconds * 1000; article.retrieved_at_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); article.normalized_content_hash = sha256(article.headline + "\n" + article.body); article.article_id = "news:sha256:" + sha256(article.canonical_url + "\n" + article.normalized_content_hash); article.entity_ids = {std::string(symbol), "sector:" + std::string(symbol)}; return article;
 }
 
 // Article carries the ETF, the constituent that surfaced it, and the sector, so
@@ -98,7 +98,7 @@ arrakis::news::Article from_constituent_news(
     std::string_view constituent
 ) {
     auto article = from_finnhub(story, etf);
-    article.entity_ids = {std::string(etf), "company:" + std::string(constituent), "sector:technology"};
+    article.entity_ids = {std::string(etf), "company:" + std::string(constituent), "sector:" + std::string(etf)};
     return article;
 }
 
@@ -178,7 +178,8 @@ int main(int argc, char** argv) {
             if (published_ids.size() >= 10000) published_ids.clear();
             if (!published_ids.insert(article.article_id).second) return;
             const auto payload = arrakis::news::serialize_article(article);
-            producer.publish(env("NEWS_RAW_TOPIC", "news.raw.articles"), "XLK", payload);
+            const auto key = article.entity_ids.empty() ? std::string{"unknown"} : article.entity_ids.front();
+            producer.publish(env("NEWS_RAW_TOPIC", "news.raw.articles"), key, payload);
             producer.poll_events(std::chrono::milliseconds{0});
             ++published;
         };

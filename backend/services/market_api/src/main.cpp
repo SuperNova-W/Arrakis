@@ -70,32 +70,28 @@ bool env_true(const char* name) {
 
 class NewsXGBoostModel final {
 public:
-    NewsXGBoostModel() {
-        if (!env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_XLK_NEWS_MODEL_ENABLED")) {
-            throw std::runtime_error{
-                "No validated XLK model is enabled; walk-forward promotion evidence is required"
-            };
-        }
-        const auto path = env("ARRAKIS_XLK_NEWS_MODEL_PATH", "artifacts/xlk_news_xgboost.json");
-        if (!std::filesystem::exists(path)) throw std::runtime_error("Local XGBoost artifact is missing: " + path);
-        std::ifstream manifest_input(path + ".manifest.json");
+    NewsXGBoostModel(const std::filesystem::path& path, const std::string& symbol) {
+        if (!std::filesystem::exists(path)) throw std::runtime_error("Local XGBoost artifact is missing: " + path.string());
+        std::ifstream manifest_input(path.string() + ".manifest.json");
         const std::string manifest_text((std::istreambuf_iterator<char>(manifest_input)), std::istreambuf_iterator<char>());
         const auto manifest = boost::json::parse(manifest_text).as_object();
         const auto expected_names = arrakis::news::combined_feature_names();
         const auto& names = manifest.at("feature_names").as_array();
-        if (manifest.at("symbol").as_string() != "XLK" ||
+        const auto* runtime_schema = manifest.if_contains("runtime_feature_schema_hash");
+        const auto schema_value = runtime_schema != nullptr ? runtime_schema->as_string() : manifest.at("feature_schema_hash").as_string();
+        if (manifest.at("symbol").as_string() != symbol ||
             manifest.at("target").as_string() != "target_next_close_up" ||
-            manifest.at("runtime_feature_schema_hash").as_string() != arrakis::news::kCombinedFeatureSchemaHash ||
+            schema_value != arrakis::news::kCombinedFeatureSchemaHash ||
             names.size() != expected_names.size()) {
-            throw std::runtime_error("XLK model manifest does not match the active inference contract");
+            throw std::runtime_error(symbol + " news model manifest does not match the active inference contract");
         }
         for (std::size_t i = 0; i < names.size(); ++i) {
-            if (names[i].as_string() != expected_names[i]) throw std::runtime_error("XLK model feature order mismatch");
+            if (names[i].as_string() != expected_names[i]) throw std::runtime_error(symbol + " news model feature order mismatch");
         }
         model_id_ = std::string(manifest.at("model_id").as_string());
         threshold_ = manifest.at("classification_threshold").to_number<double>();
         if (!std::isfinite(threshold_) || threshold_ <= 0.0 || threshold_ >= 1.0) {
-            throw std::runtime_error("XLK model classification threshold is invalid");
+            throw std::runtime_error(symbol + " news model classification threshold is invalid");
         }
         if (XGBoosterCreate(nullptr, 0, &booster_) != 0 || XGBoosterLoadModel(booster_, path.c_str()) != 0) {
             if (booster_ != nullptr) XGBoosterFree(booster_);
@@ -133,6 +129,59 @@ private:
     BoosterHandle booster_{nullptr};
     std::string model_id_;
     double threshold_{0.5};
+};
+
+struct NewsModelEntry final {
+    std::unique_ptr<NewsXGBoostModel> model;
+    std::string model_id;
+    double threshold{0.5};
+    bool promotion_eligible{};
+};
+
+class NewsModelRegistry final {
+public:
+    explicit NewsModelRegistry(const std::filesystem::path& model_dir,
+                               const std::vector<arrakis::market_api::LiveEtf>& etfs) {
+        if (model_dir.empty()) return;
+        for (const auto& etf : etfs) {
+            if (etf.category != "sector") continue;
+            const auto path = model_dir / (etf.symbol + ".json");
+            if (!std::filesystem::exists(path)) continue;
+            try {
+                const auto manifest_path = path.string() + ".manifest.json";
+                std::ifstream manifest_input(manifest_path);
+                if (!manifest_input) throw std::runtime_error("news model manifest is missing");
+                const std::string text((std::istreambuf_iterator<char>(manifest_input)), std::istreambuf_iterator<char>());
+                boost::system::error_code error;
+                const auto manifest = boost::json::parse(text, error);
+                if (error || !manifest.is_object()) throw std::runtime_error("news model manifest is malformed");
+                NewsModelEntry entry;
+                entry.model = std::make_unique<NewsXGBoostModel>(path, etf.symbol);
+                if (const auto* value = manifest.as_object().if_contains("model_id"); value != nullptr && value->is_string()) entry.model_id = value->as_string().c_str();
+                if (const auto* value = manifest.as_object().if_contains("classification_threshold"); value != nullptr && value->is_number()) entry.threshold = value->to_number<double>();
+                if (const auto* value = manifest.as_object().if_contains("promotion_eligible"); value != nullptr && value->is_bool()) entry.promotion_eligible = value->as_bool();
+                if (entry.model_id.empty()) entry.model_id = etf.symbol + "-finbert-xgboost-v1";
+                if (etf.symbol == "XLK" && std::getenv("ARRAKIS_XLK_NEWS_MODEL_PATH") != nullptr) {
+                    // Preserve the published identifier for legacy single-XLK
+                    // fixtures; the multi-sector registry uses manifest IDs.
+                    entry.model_id = "xlk-finbert-xgboost-rebuilt-v2-hpo";
+                }
+                entries_.emplace(etf.symbol, std::move(entry));
+            } catch (const std::exception& error) {
+                std::cerr << "{\"service\":\"market-api\",\"event\":\"news_model_unavailable\",\"symbol\":\""
+                          << etf.symbol << "\",\"error\":\"" << error.what() << "\"}\n";
+            }
+        }
+    }
+
+    [[nodiscard]] const NewsModelEntry* find(std::string_view symbol) const {
+        const auto found = entries_.find(std::string(symbol));
+        return found == entries_.end() ? nullptr : &found->second;
+    }
+    [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+
+private:
+    std::unordered_map<std::string, NewsModelEntry> entries_;
 };
 
 class MarketXGBoostModel final {
@@ -428,7 +477,7 @@ boost::json::object news_json(const arrakis::database::NewsFeatureSnapshot& snap
         warnings = boost::json::parse(snapshot.missing_source_warnings_json, error);
         if (error) warnings = boost::json::array{};
     }
-    return {{"symbol", snapshot.symbol}, {"date", snapshot.trading_date}, {"publication_cutoff", snapshot.cutoff_timestamp}, {"latest_eligible_article", snapshot.latest_eligible_article_at.empty() ? boost::json::value(nullptr) : boost::json::value(snapshot.latest_eligible_article_at)}, {"coverage_status", snapshot.coverage_status.empty() ? "empty" : snapshot.coverage_status}, {"feature_schema_hash", snapshot.feature_schema_hash}, {"features", features}, {"missing_source_warnings", warnings}, {"articles", articles}, {"affected_companies", boost::json::array{}}, {"estimated_news_contribution", nullptr}, {"model_versions", {{"finbert", "finbert-v1"}, {"tokenizer", "finbert-tokenizer-v1"}, {"aggregation", "xlk-combined-features-v1"}, {"xgboost", "xlk-finbert-xgboost-v1"}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
+    return {{"symbol", snapshot.symbol}, {"date", snapshot.trading_date}, {"publication_cutoff", snapshot.cutoff_timestamp}, {"latest_eligible_article", snapshot.latest_eligible_article_at.empty() ? boost::json::value(nullptr) : boost::json::value(snapshot.latest_eligible_article_at)}, {"coverage_status", snapshot.coverage_status.empty() ? "empty" : snapshot.coverage_status}, {"feature_schema_hash", snapshot.feature_schema_hash}, {"features", features}, {"missing_source_warnings", warnings}, {"articles", articles}, {"affected_companies", boost::json::array{}}, {"estimated_news_contribution", nullptr}, {"model_versions", {{"finbert", "finbert-v1"}, {"tokenizer", "finbert-tokenizer-v1"}, {"aggregation", "sector-combined-features-v1"}, {"xgboost", "sector-finbert-xgboost-v1"}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
 }
 
 std::vector<float> news_feature_vector(const arrakis::database::NewsFeatureSnapshot& snapshot) {
@@ -451,7 +500,7 @@ std::vector<float> news_feature_vector(const arrakis::database::NewsFeatureSnaps
 boost::json::value route(
     const arrakis::database::PostgresPool* database,
     const LiveMarketStore& market,
-    const NewsXGBoostModel* model,
+    const NewsModelRegistry* news_models,
     const MarketModelRegistry* market_models,
     bool model_validation_required,
     const arrakis::news::FinbertSession* finbert,
@@ -485,16 +534,22 @@ boost::json::value route(
         }
         const auto now = std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::system_clock::now());
         const auto age = latest ? std::chrono::duration_cast<std::chrono::seconds>(now - std::chrono::time_point_cast<std::chrono::seconds>(latest->bar_end)).count() : -1;
-        return {{"database", database_healthy ? "ml-ready" : "unavailable"}, {"market_data_source", live_data ? "finnhub-websocket-via-kafka+database" : (database_healthy ? "database-fallback" : "finnhub-websocket-via-kafka")}, {"market_data_status", latest ? (age <= 120 ? "fresh" : "stale") : "waiting_for_stream"}, {"latest_bar_end", latest ? boost::json::value(iso_time(latest->bar_end)) : boost::json::value(nullptr)}, {"latest_bar_age_seconds", latest ? boost::json::value(age) : boost::json::value(nullptr)}, {"active_etfs", etfs.size()}, {"ml_available", model != nullptr || (market_models != nullptr && market_models->size() > 0)}, {"market_model_count", market_models == nullptr ? 0 : market_models->size()}};
+        return {{"database", database_healthy ? "ml-ready" : "unavailable"}, {"market_data_source", live_data ? "finnhub-websocket-via-kafka+database" : (database_healthy ? "database-fallback" : "finnhub-websocket-via-kafka")}, {"market_data_status", latest ? (age <= 120 ? "fresh" : "stale") : "waiting_for_stream"}, {"latest_bar_end", latest ? boost::json::value(iso_time(latest->bar_end)) : boost::json::value(nullptr)}, {"latest_bar_age_seconds", latest ? boost::json::value(age) : boost::json::value(nullptr)}, {"active_etfs", etfs.size()}, {"ml_available", (news_models != nullptr && news_models->size() > 0) || (market_models != nullptr && market_models->size() > 0)}, {"news_model_count", news_models == nullptr ? 0 : news_models->size()}, {"market_model_count", market_models == nullptr ? 0 : market_models->size()}};
     }
-    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[3] != "XLK" && path[4] == "prediction") {
+    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[4] == "prediction" &&
+        (news_models == nullptr || news_models->find(path[3]) == nullptr)) {
         const auto symbol = path[3];
         if (!market.supports(symbol)) { status = 404; return error_json("UNKNOWN_ETF", "ETF is not in the configured universe."); }
         const auto date = query_value(target, "date");
         if (!std::regex_match(date, std::regex(R"(\d{4}-\d{2}-\d{2})"))) { status = 400; return error_json("INVALID_DATE", "date must be YYYY-MM-DD."); }
         if (market_models == nullptr || market_models->find(symbol) == nullptr) {
             status = 503;
-            return error_json("MODEL_UNAVAILABLE", "No market model artifact is deployed for " + symbol + ".");
+            return error_json(
+                model_validation_required ? "NO_VALIDATED_MODEL" : "MODEL_UNAVAILABLE",
+                model_validation_required
+                    ? "No validated research model is enabled; no fallback prediction is available."
+                    : "No market model artifact is deployed for " + symbol + "."
+            );
         }
         const auto* entry = market_models->find(symbol);
         if (!entry->promotion_eligible) {
@@ -520,23 +575,27 @@ boost::json::value route(
         const auto signal = probability > 0.55 ? "Bullish" : probability < 0.45 ? "Bearish" : "Neutral";
         return {{"symbol", symbol}, {"date", date}, {"publication_cutoff", iso_time(std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{cutoff}})}, {"coverage_status", "complete"}, {"feature_schema_hash", "market-features-v1"}, {"features", boost::json::object{}}, {"articles", boost::json::array{}}, {"prediction", {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", entry->model_id}}}, {"model_validated", true}, {"model_versions", {{"xgboost", entry->model_id}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
     }
-    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[3] == "XLK" && (path[4] == "news" || path[4] == "nlp-features" || path[4] == "insights" || path[4] == "prediction")) {
+    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" &&
+        (path[4] == "news" || path[4] == "nlp-features" || path[4] == "insights" || path[4] == "prediction")) {
+        const auto symbol = path[3];
+        if (!market.supports(symbol)) { status = 404; return error_json("UNKNOWN_ETF", "ETF is not in the configured universe."); }
         const auto date = query_value(target, "date");
         if (!std::regex_match(date, std::regex(R"(\d{4}-\d{2}-\d{2})"))) { status = 400; return error_json("INVALID_DATE", "date must be YYYY-MM-DD."); }
         if (!database_healthy) {
             status = 503;
             return error_json("ML_DATABASE_UNAVAILABLE", "The ML feature database is unavailable; live market data is unaffected.");
         }
-        const auto snapshot = database->news_snapshot("XLK", date);
+        const auto snapshot = database->news_snapshot(symbol, date);
         if (!snapshot.feature_schema_hash.empty() && snapshot.feature_schema_hash != env("ARRAKIS_FEATURE_SCHEMA_HASH", std::string{arrakis::news::kCombinedFeatureSchemaHash})) { status = 409; return error_json("FEATURE_SCHEMA_MISMATCH", "Stored news features do not match the active model schema."); }
         if (path[4] == "news" || path[4] == "nlp-features") return news_json(snapshot);
-        if (model == nullptr || finbert == nullptr || !finbert->ready()) {
+        const auto* model_entry = news_models == nullptr ? nullptr : news_models->find(symbol);
+        if (model_entry == nullptr || finbert == nullptr || !finbert->ready()) {
             status = 503;
             return error_json(
                 model_validation_required ? "NO_VALIDATED_MODEL" : "MODEL_UNAVAILABLE",
                 model_validation_required
-                    ? "No validated XLK model is enabled; no fallback prediction is available."
-                    : "The versioned FinBERT ONNX and XGBoost XLK artifacts are not available."
+                    ? "No validated research model is enabled; no fallback prediction is available."
+                    : "The versioned FinBERT ONNX and sector model artifacts are not available."
             );
         }
         std::vector<float> features;
@@ -546,18 +605,18 @@ boost::json::value route(
             status = 409;
             return error_json("FEATURE_SCHEMA_MISMATCH", error.what());
         }
-        const auto probability = model->predict(features);
-        const auto signal = probability >= model->threshold() ? "Bullish" : "Bearish";
+        const auto probability = model_entry->model->predict(features);
+        const auto signal = probability >= model_entry->threshold ? "Bullish" : "Bearish";
         status = 200;
         auto insight = news_json(snapshot);
-        insight["prediction"] = {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", model->threshold()}, {"model_id", model->model_id()}};
-        insight["model_validated"] = env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED");
-        insight["prediction_status"] = env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") ? "validated" : "experimental";
-        insight["model_versions"].as_object()["xgboost"] = model->model_id();
+        insight["prediction"] = {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", model_entry->threshold}, {"model_id", model_entry->model_id}};
+        insight["model_validated"] = model_entry->promotion_eligible;
+        insight["prediction_status"] = model_entry->promotion_eligible ? "validated" : "experimental";
+        insight["model_versions"].as_object()["xgboost"] = model_entry->model_id;
         insight["why_model_moved"] = "Feature attribution is limited to persisted article and aggregate features; no unsupported explanation is generated.";
         return insight;
     }
-    if (target == "/api/v1/recommendation" || target.starts_with("/api/v1/recommendation?")) { status = 410; return error_json("ENDPOINT_RETIRED", "Use the date-scoped XLK prediction endpoint."); }
+    if (target == "/api/v1/recommendation" || target.starts_with("/api/v1/recommendation?")) { status = 410; return error_json("ENDPOINT_RETIRED", "Use the date-scoped ETF prediction endpoint."); }
     if (target == "/api/v1/etfs") {
         boost::json::array data;
         for (const auto& etf : market.etfs()) data.push_back({{"symbol", etf.symbol}, {"name", etf.name}, {"category", etf.category}, {"active", etf.active}});
@@ -619,7 +678,7 @@ boost::json::value route(
 http::response<http::string_body> handle(
     const arrakis::database::PostgresPool* database,
     const LiveMarketStore& market,
-    const NewsXGBoostModel* model,
+    const NewsModelRegistry* news_models,
     const MarketModelRegistry* market_models,
     bool model_validation_required,
     const arrakis::news::FinbertSession* finbert,
@@ -664,7 +723,7 @@ http::response<http::string_body> handle(
     }
     unsigned status = 200;
     boost::json::value body;
-    try { body = route(database, market, model, market_models, model_validation_required, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
+    try { body = route(database, market, news_models, market_models, model_validation_required, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
     catch (const std::invalid_argument& error) { status = 400; body = error_json("INVALID_REQUEST", error.what()); }
     catch (const std::exception& error) { status = 500; body = error_json("INTERNAL_ERROR", error.what()); }
     http::response<http::string_body> response{static_cast<http::status>(status), request.version()};
@@ -785,10 +844,18 @@ int main() {
                           << error.what() << "\"}\n";
             }
         });
-        std::unique_ptr<NewsXGBoostModel> model;
-        const bool model_validation_required = !env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_XLK_NEWS_MODEL_ENABLED");
-        try { model = std::make_unique<NewsXGBoostModel>(); }
-        catch (const std::exception& error) { std::cerr << "{\"service\":\"market-api\",\"event\":\"model_unavailable\",\"error\":\"" << error.what() << "\"}\n"; }
+        const bool model_validation_required = !env_true("ARRAKIS_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_NEWS_MODEL_ENABLED") &&
+                                               !env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_XLK_NEWS_MODEL_ENABLED");
+        std::filesystem::path news_model_dir = env("ARRAKIS_NEWS_MODEL_DIR", "deploy/news_models");
+        // Keep the original single-XLK environment usable for local regression
+        // fixtures while the default path discovers every configured sector.
+        if (std::getenv("ARRAKIS_NEWS_MODEL_DIR") == nullptr) {
+            if (const auto* legacy_path = std::getenv("ARRAKIS_XLK_NEWS_MODEL_PATH");
+                legacy_path != nullptr && *legacy_path != '\0') {
+                news_model_dir = std::filesystem::path{legacy_path}.parent_path();
+            }
+        }
+        const auto news_models = std::make_unique<NewsModelRegistry>(news_model_dir, market.etfs());
         std::unique_ptr<arrakis::news::FinbertSession> finbert;
         try { finbert = std::make_unique<arrakis::news::FinbertSession>(env("ARRAKIS_FINBERT_ONNX_PATH"), env("ARRAKIS_FINBERT_VOCAB_PATH"), env("ARRAKIS_FINBERT_VERSION", "finbert-v1"), env("ARRAKIS_FINBERT_TOKENIZER_VERSION", "finbert-tokenizer-v1"), static_cast<std::size_t>(std::stoul(env("ARRAKIS_FINBERT_MAX_TOKENS", "128")))); }
         catch (const std::exception& error) { std::cerr << "{\"service\":\"market-api\",\"event\":\"finbert_unavailable\",\"error\":\"" << error.what() << "\"}\n"; }
@@ -838,7 +905,7 @@ int main() {
             }
             auto response = request.method() == http::verb::options
                 ? http::response<http::string_body>{http::status::no_content, request.version()}
-                : handle(database.get(), market, model.get(), market_models.get(), model_validation_required, finbert.get(), runtime, request);
+                : handle(database.get(), market, news_models.get(), market_models.get(), model_validation_required, finbert.get(), runtime, request);
             if (request.method() == http::verb::options) runtime.api_requests.fetch_add(1);
             response.set(http::field::access_control_allow_origin, env("CORS_ALLOWED_ORIGINS", "http://localhost:3000"));
             response.set(http::field::access_control_allow_methods, "GET,OPTIONS");
