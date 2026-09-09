@@ -416,7 +416,11 @@ jobs:
         working-directory: backend
         env:
           ARRAKIS_MARKET_MODEL_DIR: ${{ github.workspace }}/backend/deploy/market_models
-          ARRAKIS_SIGNAL_SYMBOLS: 'XLC XLY XLP XLE XLF XLV XLI XLB XLRE XLU SPY QQQ IWM TLT HYG GLD USO'
+          # Context candidates have their own research rows. Sector rows are
+          # already published by the FinBERT + XGBoost export above; exporting
+          # market-only candidates for them here would overwrite those richer
+          # documents with empty news coverage.
+          ARRAKIS_SIGNAL_SYMBOLS: 'SPY QQQ IWM TLT HYG GLD USO'
           ARRAKIS_SIGNAL_DATE: ${{ steps.window.outputs.date }}
           ARRAKIS_SIGNAL_OUT_DIR: /tmp/signals
           ARRAKIS_SIGNAL_RUN_KIND: ${{ steps.window.outputs.run_kind }}

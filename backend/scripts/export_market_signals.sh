@@ -11,7 +11,10 @@ set -euo pipefail
 api_url=${ARRAKIS_MARKET_API_URL:-http://127.0.0.1:8080}
 signal_date=${ARRAKIS_SIGNAL_DATE:?ARRAKIS_SIGNAL_DATE must be set (YYYY-MM-DD)}
 out_dir=${ARRAKIS_SIGNAL_OUT_DIR:?ARRAKIS_SIGNAL_OUT_DIR must be set}
-symbols=${ARRAKIS_SIGNAL_SYMBOLS:-"XLC XLY XLP XLE XLF XLV XLI XLB XLRE XLK XLU SPY QQQ IWM TLT HYG GLD USO"}
+# Sector research rows are owned by export_daily_signal.sh. Keep this
+# market-only baseline default scoped to context funds so an ad-hoc run cannot
+# replace a sector's FinBERT document with an empty news snapshot.
+symbols=${ARRAKIS_SIGNAL_SYMBOLS:-"SPY QQQ IWM TLT HYG GLD USO"}
 git_sha=${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 run_kind=${ARRAKIS_SIGNAL_RUN_KIND:-intraday}
 window_start=${ARRAKIS_SIGNAL_WINDOW_START_ISO:-}
