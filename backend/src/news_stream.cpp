@@ -155,6 +155,11 @@ std::vector<std::string> poll_universe(
 ) {
     std::vector<std::string> universe{etf};
     skipped = 0;
+    // The repository currently has a point-in-time constituent archive for
+    // XLK only. Do not accidentally apply that technology universe to every
+    // other sector: those symbols use their direct ETF feed until a complete
+    // sector holdings resolver is installed.
+    if (etf != "XLK") return universe;
     for (const auto& member : membership.constituents_on(date)) {
         if (member.symbol == etf) continue;
         if (!arrakis::news::is_pollable_ticker(member.symbol)) { ++skipped; continue; }
