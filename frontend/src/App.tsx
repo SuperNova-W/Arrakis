@@ -125,11 +125,11 @@ function TileRecommendation({ symbol }: { symbol: string }) {
   const ml = useMlRecommendation(currentMarketDate(), symbol, true)
   const document = ml.news.data ?? ml.insights.data ?? ml.prediction.data
   const prediction = document?.prediction
-  if (ml.loading && !document) return <div className="tile-recommendation" aria-live="polite"><span className="tile-recommendation-label">Forecast</span><span className="tile-recommendation-loading">Loading…</span></div>
-  if (!prediction) return <div className="tile-recommendation tile-recommendation-empty"><span className="tile-recommendation-label">Forecast</span><b>Not available yet</b><small>{document?.date ? `Last update · ${document.date}` : 'Research is still collecting data'}</small></div>
+  if (ml.loading && !document) return <div className="tile-recommendation" aria-live="polite"><span className="tile-recommendation-label">Recommendation</span><span className="tile-recommendation-loading">Loading…</span></div>
+  if (!prediction) return <div className="tile-recommendation tile-recommendation-empty"><span className="tile-recommendation-label">Recommendation</span><b>Not available yet</b><small>{document?.date ? `Last update · ${document.date}` : 'Research is still collecting data'}</small></div>
   const probability = prediction.probability_positive_return
   return <div className="tile-recommendation">
-    <div className="tile-recommendation-head"><span className="tile-recommendation-label">Forecast</span><span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span></div>
+    <div className="tile-recommendation-head"><span className="tile-recommendation-label">Recommendation</span><span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span></div>
     <div className="tile-recommendation-probability"><strong>{(probability * 100).toFixed(1)}%</strong><span>chance of a higher close</span></div>
     <div className="tile-recommendation-bar" aria-hidden="true"><i style={{ width: `${probability * 100}%` }}/></div>
   </div>
@@ -152,7 +152,7 @@ function Dashboard({ apiKey }: { apiKey: string }) {
   const contexts = ETF_UNIVERSE.filter(etf => etf.category === 'context')
   return <>
     <Topbar eyebrow={`MARKET OVERVIEW · ${marketStatus().toUpperCase()}`} title="ETF research dashboard"/>
-    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Each tile includes today’s price chart and its latest research outlook. Prices supplied by Finnhub.</span></div></div>
+    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Each tile includes today’s price chart and its latest recommendation. Prices supplied by Finnhub.</span></div></div>
     <EtfSection title="Sector ETFs" items={sectors} apiKey={apiKey}/>
     <EtfSection title="Market context" items={contexts} apiKey={apiKey}/>
   </>
