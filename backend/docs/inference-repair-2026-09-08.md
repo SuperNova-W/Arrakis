@@ -20,6 +20,13 @@ technical warnings. Browser inspection confirmed the Supabase read succeeded. Ac
   public result. Shell regression tests cover model, database, HTML and transport failures.
 - `/api/v1/etfs/XLK/prediction` was shadowed by the generic market-model route. It now shares the
   FinBERT/news path with `/insights`. Unsupported hardcoded news themes were removed.
+- The article query used `SELECT DISTINCT` while ordering by an unselected timestamp. PostgreSQL
+  rejected it, and unchecked query status converted the error into zero citations. It now uses
+  `EXISTS`, checks both query results, and restricts citations to midnight New York through the
+  snapshot cutoff. An isolated PostgreSQL/API regression verifies boundaries, uniqueness, route
+  selection and error propagation. Export also rejects positive news counts with no citations.
+- A keepalive push could race a deployment commit. It now rebases the heartbeat on the current
+  branch before pushing, preserving intervening code changes.
 - The UI now uses plain-language availability states, actual dates, explicit latest/exact-date modes,
   safe article citations, readable text, visible keyboard focus and a chart table alternative.
   Responses are keyed to the selected fund/date to prevent displaying a previous fund's result.
@@ -36,5 +43,10 @@ from evidence that a forecast is reliable. Enabling forecasts requires the exist
 validation evidence, not merely changing a flag to hide an empty screen.
 
 Local verification: C++ client regression test, daily-bar/news/market-feature tests, exporter failure
-regressions, frontend lint and build. Live deployment verification is recorded separately after the
-repaired workflow completes.
+regressions, frontend lint/build and an isolated PostgreSQL 16 integration test. Browser verification
+covered the deployed recommendations, exact-date empty state, fund chart and price-table alternative;
+390px mobile selectors measure 358px wide and 44px high without page overflow.
+
+The first repaired run (34303213766) fetched 814 distinct articles with zero failed requests across
+55 provider calls and completed FinBERT enrichment. It exposed the citation query error above; its
+heartbeat also raced a frontend deployment. A subsequent run verifies those follow-up fixes.
