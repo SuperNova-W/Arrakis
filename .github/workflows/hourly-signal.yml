@@ -53,7 +53,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  ONNXRUNTIME_VERSION: '1.28.0'
+  ONNXRUNTIME_VERSION: '1.28.2'
   # Must match the Homebrew onnxruntime version used on the development machine
   # so FinBERT numerics are identical between local and deployed runs.
 
