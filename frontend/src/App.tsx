@@ -241,16 +241,17 @@ function featureValue(document: MlPayload | null, name: string) {
 function averageArticleValue(document: MlPayload | null, key: 'positive_probability' | 'neutral_probability' | 'negative_probability' | 'sentiment_score') {
   const articles = document?.articles ?? []
   if (!articles.length) return null
-  const total = articles.reduce((sum, article) => sum + article[key], 0)
-  return total / articles.length
+  const values = articles.map(article => article[key]).filter(value => Number.isFinite(value))
+  if (!values.length) return null
+  return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
 function formatRatio(value: number | null) {
-  return value == null ? '—' : `${(value * 100).toFixed(1)}%`
+  return value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(1)}%`
 }
 
 function formatScore(value: number | null) {
-  return value == null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}`
+  return value == null || !Number.isFinite(value) ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}`
 }
 
 function formatCoverage(value?: string) {
