@@ -38,7 +38,7 @@ INSERT INTO news_article_entities(article_id,entity_type,entity_id) VALUES ('eli
 SQL
 SUPABASE_DB_URL="postgresql://postgres:test-only@127.0.0.1:${pg_port}/postgres" \
 ARRAKIS_ETF_UNIVERSE="$backend_root/config/etf_universe.json" \
-ARRAKIS_XLK_NEWS_MODEL_VALIDATED=false ARRAKIS_MARKET_MODEL_DIR='' ARRAKIS_FEATURE_SCHEMA_HASH=test-schema \
+ARRAKIS_XLK_NEWS_MODEL_ENABLED=false ARRAKIS_XLK_NEWS_MODEL_VALIDATED=false ARRAKIS_MARKET_MODEL_DIR='' ARRAKIS_FEATURE_SCHEMA_HASH=test-schema \
 KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:1 MARKET_API_PORT="$api_port" \
 "$api_binary" > "$task_tmp/api.log" 2>&1 &
 api_pid=$!
@@ -52,6 +52,40 @@ curl -fsS "$url/news?date=2026-09-08" > "$task_tmp/news.json"
 jq -e '[.articles[].article_id] == ["eligible","opening-boundary"]' "$task_tmp/news.json" >/dev/null
 # The XLK prediction route must use this news snapshot, not a market-only artifact.
 curl -sS "$url/prediction?date=2026-09-08" | jq -e '.error.code == "NO_VALIDATED_MODEL"' >/dev/null
+# Exercise the selected artifact against a held-out row when FinBERT is available.
+if [ -f "$backend_root/models/finbert/model.onnx" ]; then
+    kill "$api_pid"
+    wait "$api_pid" 2>/dev/null || true
+    fixture="$backend_root/deploy/news_models/XLK.json.smoke.json"
+    features=$(jq -c '.features' "$fixture")
+    docker exec -i "$container_id" psql -U postgres -v ON_ERROR_STOP=1 -v features="$features" -q <<'SQL'
+UPDATE etf_daily_news_features SET feature_schema_hash='xlk-combined-features-v2', features=:'features'::jsonb WHERE symbol='XLK';
+SQL
+    SUPABASE_DB_URL="postgresql://postgres:test-only@127.0.0.1:${pg_port}/postgres" \
+    ARRAKIS_ETF_UNIVERSE="$backend_root/config/etf_universe.json" \
+    ARRAKIS_XLK_NEWS_MODEL_ENABLED=true ARRAKIS_XLK_NEWS_MODEL_VALIDATED=false \
+    ARRAKIS_XLK_NEWS_MODEL_PATH="$backend_root/deploy/news_models/XLK.json" \
+    ARRAKIS_FINBERT_ONNX_PATH="$backend_root/models/finbert/model.onnx" \
+    ARRAKIS_FINBERT_VOCAB_PATH="$backend_root/models/finbert/vocab.txt" \
+    ARRAKIS_MARKET_MODEL_DIR='' ARRAKIS_FEATURE_SCHEMA_HASH=xlk-combined-features-v2 \
+    KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:1 MARKET_API_PORT="$api_port" \
+    "$api_binary" > "$task_tmp/api.log" 2>&1 &
+    api_pid=$!
+    for _ in {1..30}; do
+        curl -fsS "http://127.0.0.1:${api_port}/health" >/dev/null 2>&1 && break
+        kill -0 "$api_pid"
+        sleep 1
+    done
+    ARRAKIS_SIGNAL_DATE=2026-09-08 ARRAKIS_SIGNAL_OUT_DIR="$task_tmp/output" \
+    ARRAKIS_MARKET_API_URL="http://127.0.0.1:${api_port}" ARRAKIS_XLK_NEWS_MODEL_VALIDATED=false \
+        bash "$backend_root/scripts/export_daily_signal.sh"
+    jq -e --argjson expected "$(jq '.expected_probability' "$fixture")" '
+        .prediction_status == "experimental" and .model_validated == false and
+        .prediction.model_id == "xlk-finbert-xgboost-rebuilt-v2-hpo" and
+        ((.prediction.probability_positive_return - $expected) | fabs < 0.000001)
+    ' "$task_tmp/output/latest.json" >/dev/null
+    echo 'PASS: selected model matches held-out probability through database, C++ API and export'
+fi
 # Break only our disposable schema: database errors must be HTTP failures, not empty arrays.
 docker exec "$container_id" psql -U postgres -v ON_ERROR_STOP=1 -qc 'DROP TABLE news_nlp_features'
 status=$(curl -sS -o "$task_tmp/error.json" -w '%{http_code}' "$url/news?date=2026-09-08")

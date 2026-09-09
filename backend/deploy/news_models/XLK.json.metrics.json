@@ -1,0 +1,114 @@
+{
+  "target": "target_next_close_up",
+  "feature_subset": "combined",
+  "train_rows": 505,
+  "validation_rows": 503,
+  "test_rows": 249,
+  "evaluation_split": "test",
+  "accuracy": 0.578313,
+  "log_loss": 0.679620,
+  "roc_auc": 0.540079,
+  "positive_rate": 0.578313,
+  "mean_probability": 0.583643,
+  "selected_best_iteration": 1,
+  "rounds_run": 26,
+  "best_validation_logloss": 0.710829,
+  "early_stopping_rounds": 25,
+  "hyperparameter_search_candidates": 72,
+  "hyperparameters": {
+    "eta": 0.100000,
+    "max_depth": 4,
+    "min_child_weight": 1,
+    "subsample": 1.000000,
+    "colsample_bytree": 1.000000,
+    "lambda": 1.000000,
+    "alpha": 0.000000
+  },
+  "validation_start": "2021-01-04",
+  "validation_end": "2022-12-30",
+  "test_start": "2023-01-03",
+  "test_end": "2023-12-28",
+  "validation": {
+    "rows": 503,
+    "accuracy": 0.489066,
+    "log_loss": 0.710829,
+    "roc_auc": 0.525648,
+    "positive_rate": 0.489066,
+    "mean_probability": 0.583329
+  },
+  "validation_prediction_diagnostics":   {
+    "min": 0.542412,
+    "max": 0.619150,
+    "mean": 0.583329,
+    "stddev": 0.015770,
+    "constant_prediction": false,
+    "histogram_10_buckets": [0, 0, 0, 0, 0, 472, 31, 0, 0, 0],
+    "confusion_matrix": {
+      "true_negative": 0,
+      "false_positive": 257,
+      "false_negative": 0,
+      "true_positive": 246
+    },
+    "positive_labels": 246,
+    "negative_labels": 257,
+    "majority_label": 0,
+    "majority_accuracy": 0.510934
+  },
+  "test": {
+    "rows": 249,
+    "accuracy": 0.578313,
+    "log_loss": 0.679620,
+    "roc_auc": 0.540079,
+    "positive_rate": 0.578313,
+    "mean_probability": 0.583643
+  },
+  "test_prediction_diagnostics":   {
+    "min": 0.542412,
+    "max": 0.619150,
+    "mean": 0.583643,
+    "stddev": 0.012526,
+    "constant_prediction": false,
+    "histogram_10_buckets": [0, 0, 0, 0, 0, 246, 3, 0, 0, 0],
+    "confusion_matrix": {
+      "true_negative": 0,
+      "false_positive": 105,
+      "false_negative": 0,
+      "true_positive": 144
+    },
+    "positive_labels": 144,
+    "negative_labels": 105,
+    "majority_label": 1,
+    "majority_accuracy": 0.578313
+  },
+  "validation_by_year":   [
+    {
+      "year": 2021,
+      "rows": 252,
+      "accuracy": 0.523810,
+      "log_loss": 0.698690,
+      "roc_auc": 0.546275,
+      "positive_rate": 0.523810,
+      "mean_probability": 0.586786
+    },
+    {
+      "year": 2022,
+      "rows": 251,
+      "accuracy": 0.454183,
+      "log_loss": 0.723016,
+      "roc_auc": 0.487482,
+      "positive_rate": 0.454183,
+      "mean_probability": 0.579859
+    }
+  ],
+  "test_by_year":   [
+    {
+      "year": 2023,
+      "rows": 249,
+      "accuracy": 0.578313,
+      "log_loss": 0.679620,
+      "roc_auc": 0.540079,
+      "positive_rate": 0.578313,
+      "mean_probability": 0.583643
+    }
+  ]
+}

@@ -71,6 +71,7 @@ export interface MlPayload {
   generated_at?: string
   source_commit?: string
   model_validated?: boolean
+  prediction_status?: 'experimental' | 'validated'
   pipeline_run?: string
   /**
    * 'post_close' is the signal of record: its news window covers the full
@@ -172,7 +173,7 @@ async function fetchDocument(date: string, symbol: string, signal: AbortSignal, 
       (document.articles != null && !Array.isArray(document.articles))) {
     throw new MlApiError(`The research document for ${date} is malformed.`, 'FEATURES_UNAVAILABLE', response.status)
   }
-  if (document.prediction && (row.model_validated !== true ||
+  if (document.prediction && ((row.model_validated !== true && document.prediction_status !== 'experimental') ||
       !Number.isFinite(document.prediction.probability_positive_return) ||
       document.prediction.probability_positive_return < 0 || document.prediction.probability_positive_return > 1 ||
       !['Bullish', 'Neutral', 'Bearish'].includes(document.prediction.direction))) {

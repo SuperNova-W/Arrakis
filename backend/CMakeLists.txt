@@ -253,6 +253,8 @@ if(BUILD_TESTING AND ARRAKIS_BUILD_XGBOOST_TRAINER)
         add_test(NAME arrakis_signal_export_tests
             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/signal_export_test.sh)
         set_tests_properties(arrakis_signal_export_tests PROPERTIES SKIP_RETURN_CODE 77)
+        add_test(NAME arrakis_deployed_news_model_contract
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_news_model.sh)
         if(TARGET market-api)
             add_test(NAME arrakis_news_snapshot_integration
                 COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/news_snapshot_integration.sh $<TARGET_FILE:market-api>)

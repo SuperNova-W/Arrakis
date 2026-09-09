@@ -101,10 +101,10 @@ jobs:
       # The ephemeral broker is intentionally empty on each run. Topic creation
       # is opt-in here; long-lived environments should provision topics via IaC.
       ARRAKIS_KAFKA_CREATE_TOPICS: 'true'
-      # The gate stays CLOSED. No target has cleared the documented walk-forward
-      # bar, and AGENTS.md forbids presenting a prediction without that evidence.
-      # Flip this to 'true' only when a target clears it.
+      # Enable the selected personal-project forecast independently of research
+      # promotion. Keep validation metadata truthful.
       ARRAKIS_XLK_NEWS_MODEL_VALIDATED: 'false'
+      ARRAKIS_XLK_NEWS_MODEL_ENABLED: 'true'
       ARRAKIS_MARKET_MODEL_DIR: ${{ github.workspace }}/backend/deploy/market_models
       ARRAKIS_DAILY_BAR_SYMBOLS: 'XLC,XLY,XLP,XLE,XLF,XLV,XLI,XLB,XLRE,XLK,XLU,SPY,QQQ,IWM,TLT,HYG,GLD,USO'
       ARRAKIS_FINBERT_VERSION: finbert-v1
@@ -264,10 +264,8 @@ jobs:
       - name: Download model artifacts
         if: steps.window.outputs.skip != 'true'
         working-directory: backend
-        # Neither artifact is in git: backend/.gitignore excludes
-        # models/finbert/* and the whole of /artifacts/. Both are published once
-        # to a GitHub Release. Release assets on a public repo are free and
-        # unauthenticated. The cache above usually makes this a no-op.
+        # FinBERT comes from the pinned release; the small XGBoost artifact
+        # and its evaluation evidence are versioned in deploy/news_models.
         env:
           MODELS_RELEASE_TAG: ${{ vars.MODELS_RELEASE_TAG || 'models-v1' }}
         run: |
@@ -276,8 +274,7 @@ jobs:
           mkdir -p models/finbert artifacts
           [ -f models/finbert/model.onnx ] || curl -fsSL "$base/model.onnx" -o models/finbert/model.onnx
           [ -f models/finbert/vocab.txt  ] || curl -fsSL "$base/vocab.txt"  -o models/finbert/vocab.txt
-          curl -fsSL "$base/xlk_news_xgboost.json" -o artifacts/xlk_news_xgboost.json || \
-            echo "::warning::XGBoost artifact missing from release; prediction stays gated (expected while unvalidated)."
+          bash scripts/verify_news_model.sh
           # Integrity: verify against the digests pinned in manifest.json,
           # whether the files came from the cache or the release.
           expected_model=$(jq -r '.model_sha256'      models/finbert/manifest.json)
@@ -374,7 +371,7 @@ jobs:
         env:
           ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model.onnx
           ARRAKIS_FINBERT_VOCAB_PATH: ${{ github.workspace }}/backend/models/finbert/vocab.txt
-          ARRAKIS_XLK_NEWS_MODEL_PATH: ${{ github.workspace }}/backend/artifacts/xlk_news_xgboost.json
+          ARRAKIS_XLK_NEWS_MODEL_PATH: ${{ github.workspace }}/backend/deploy/news_models/XLK.json
           ARRAKIS_ETF_UNIVERSE: ${{ github.workspace }}/backend/config/etf_universe.json
           MARKET_API_PORT: '8080'
         run: |

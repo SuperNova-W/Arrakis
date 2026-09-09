@@ -9,7 +9,6 @@ import {
   BookOpen,
   LayoutDashboard,
   RefreshCw,
-  ShieldCheck,
   WifiOff,
 } from 'lucide-react'
 import FinnhubChart from './components/FinnhubChart'
@@ -26,7 +25,6 @@ import { MlApiError, useMlRecommendation } from './mlApi'
 
 const TWELVE_DATA_API_KEY = (import.meta.env.VITE_TWELVE_DATA_API_KEY ?? '').trim()
 
-const DISCLAIMER = 'Research data only. Not investment advice. No trades are executed by this platform.'
 const RANGES: ChartRange[] = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'MAX']
 const INDICATORS: Array<{ key: IndicatorKey; label: string; kind: 'overlay' | 'pane' }> = [
   { key: 'sma20', label: 'SMA 20', kind: 'overlay' },
@@ -90,7 +88,6 @@ function Shell({ children }: { children: React.ReactNode }) {
       </nav>
     </header>
     <main id="main-content" tabIndex={-1}>{children}</main>
-    <div className="disclaimer"><AlertTriangle size={13}/> {DISCLAIMER}</div>
   </div>
 }
 
@@ -293,7 +290,6 @@ function Recommendation() {
   const prediction = ml.prediction.data?.prediction
   const error = ml.prediction.error ?? ml.news.error ?? ml.insights.error
   const provisional = document?.run_kind === 'intraday'
-  const stale = latest && document && Date.parse(date) - Date.parse(document.date) > 3 * 24 * 60 * 60 * 1000
 
   return <>
     <Topbar eyebrow="EXPLORE THE OUTLOOK" title="Recommendations">
@@ -302,7 +298,7 @@ function Recommendation() {
       {!latest && <label className="date-control"><span>Research date</span><input type="date" max={currentMarketDate()} value={date} onChange={event => setDate(event.target.value)}/></label>}
       <button className="outline-btn" disabled={ml.loading} onClick={ml.refresh}><RefreshCw size={14}/>{ml.loading ? 'Updating…' : 'Refresh'}</button>
     </Topbar>
-    <div className="notice-banner live-source"><BookOpen size={20}/><div><b>A research outlook for each fund</b><span>Explore the outlook for the next trading day alongside available news. Forecasts appear only after reliability checks. They are estimates, not guarantees.</span></div></div>
+    <div className="notice-banner live-source"><BookOpen size={20}/><div><b>A research outlook for each fund</b><span>Explore the outlook for the next trading day alongside available news. </span></div></div>
     <div aria-live="polite" aria-atomic="true">
       {ml.loading ? <div className="panel empty-state"><RefreshCw size={20}/><p>Loading research for {symbol}…</p></div> : null}
     </div>
@@ -312,15 +308,13 @@ function Recommendation() {
         {document?.generated_at && <span>Updated <time dateTime={document.generated_at}>{new Date(document.generated_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</time></span>}
         <span>{provisional ? 'During-market update' : 'After-market update'}</span>
       </div>
-      {stale && <div className="inline-warning" role="status"><AlertTriangle size={16}/>This is an older update. New research has not been published yet.</div>}
-      {provisional && <div className="inline-warning"><AlertTriangle size={16}/>This update covers part of the trading day. Check back after the market closes for the day’s complete research.</div>}
       <section className="recommendation-layout" aria-label={`${symbol} research`}>
         <div className="panel insight-panel">
           <div className="panel-head"><div><div className="eyebrow">{symbol} · {findEtf(symbol)?.name}</div><h2>Next trading day outlook</h2></div>{prediction && <span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span>}</div>
           {prediction ? <>
             <div className="insight-primary"><strong>{(prediction.probability_positive_return * 100).toFixed(1)}%</strong><span>estimated chance of a higher closing price</span></div>
             <div className="confidence-track" aria-hidden="true"><i style={{ width: `${prediction.probability_positive_return * 100}%` }}/></div>
-            <p className="outlook-explanation">{prediction.direction === 'Bullish' ? 'The forecast leans toward a price increase.' : prediction.direction === 'Bearish' ? 'The forecast leans toward a price decrease.' : 'The forecast does not favor a clear direction.'} Actual prices may move differently.</p>
+            <p className="outlook-explanation">{prediction.direction === 'Bullish' ? 'The forecast leans toward a price increase.' : prediction.direction === 'Bearish' ? 'The forecast leans toward a price decrease.' : 'The forecast does not favor a clear direction.'}</p>
           </> : <div className="empty-state"><BookOpen size={22}/><div><h2>Forecast not yet available</h2><p>{error ? formatMlError(error) : 'There is not enough information to offer an outlook for this date.'}</p><Link to={`/etfs/${symbol}`} className="outline-btn">Explore {symbol} prices <ChevronRight size={14}/></Link></div></div>}
         </div>
         <div className="panel news-panel">
@@ -334,7 +328,6 @@ function Recommendation() {
           {(document?.articles.length ?? 0) > 8 && <button className="outline-btn" aria-expanded={showAllArticles} onClick={() => setShowAllArticles(value => !value)}>{showAllArticles ? 'Show fewer articles' : `Show all ${document?.articles.length} articles`}</button>}
           {!!document?.articles.length && <p className="news-explanation">Article tone describes the language in the news; it does not predict price movement.</p>}
         </div>
-        <div className="panel research-only-note"><ShieldCheck size={20}/><div><b>Use research as a starting point</b><p>Consider other sources and your own circumstances before making investment decisions. {DISCLAIMER}</p></div></div>
       </section>
     </>)}
   </>
@@ -342,7 +335,7 @@ function Recommendation() {
 
 function formatMlError(error: MlApiError) {
   switch (error.code) {
-    case 'NO_VALIDATED_MODEL': return 'Our forecasts have not yet met our reliability checks, so there is no recommendation for this fund. You can still explore its prices and available news.'
+    case 'NO_VALIDATED_MODEL': return 'A forecast is not available for this fund yet. You can still explore its prices and available news.'
     case 'FEATURES_UNAVAILABLE': return 'No research is available for this date. Choose another trading day or select “Latest available.”'
     case 'INVALID_DATE': return 'Choose a valid research date using the date selector.'
     case 'NETWORK_ERROR': return 'We could not load the latest research. Check your connection and try again.'

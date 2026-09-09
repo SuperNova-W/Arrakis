@@ -13,12 +13,9 @@
 #                                            validated model is enabled, else
 #                                            503 NO_VALIDATED_MODEL
 #
-# A 503 from /insights is a NORMAL, EXPECTED outcome, not a failure. The gate
-# ARRAKIS_XLK_NEWS_MODEL_VALIDATED stays false until a target clears the
-# documented walk-forward bar, and AGENTS.md forbids presenting a prediction
-# without that evidence. With the gate closed we publish the news/feature
-# payload plus an explicit prediction_error, and the existing UI renders its
-# "No validated model" state.
+# Enable personal-project inference with ARRAKIS_XLK_NEWS_MODEL_ENABLED.
+# Validation remains separate provenance; only NO_VALIDATED_MODEL is an
+# expected refusal when inference is disabled. Operational failures stop publication.
 set -euo pipefail
 
 api_url=${ARRAKIS_MARKET_API_URL:-http://127.0.0.1:8080}
@@ -57,7 +54,15 @@ if ! jq -e '((.features.article_count // 0) <= 0) or ((.articles // []) | length
 fi
 
 if [ "$insights_status" = "200" ]; then
-    # Validated model enabled: /insights is a superset of /news.
+    # Enabled model: /insights is a superset of /news.
+    jq -e '.prediction.probability_positive_return as $p |
+        ($p | type == "number") and $p >= 0 and $p <= 1 and
+        (.prediction.direction == "Bullish" or .prediction.direction == "Neutral" or .prediction.direction == "Bearish") and
+        (.prediction.model_id | type == "string" and length > 0) and
+        (.prediction_status == "experimental" or .model_validated == true)' "$insights_body" >/dev/null || {
+        echo 'FATAL: enabled model returned an invalid prediction document.' >&2
+        exit 1
+    }
     merged=$(jq -s '.[0] * .[1] + {prediction_error: null}' "$news_body" "$insights_body")
 else
     # Only an explicit validation refusal is a normal no-forecast result.

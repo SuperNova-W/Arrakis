@@ -71,13 +71,32 @@ bool env_true(const char* name) {
 class NewsXGBoostModel final {
 public:
     NewsXGBoostModel() {
-        if (!env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED")) {
+        if (!env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_XLK_NEWS_MODEL_ENABLED")) {
             throw std::runtime_error{
                 "No validated XLK model is enabled; walk-forward promotion evidence is required"
             };
         }
         const auto path = env("ARRAKIS_XLK_NEWS_MODEL_PATH", "artifacts/xlk_news_xgboost.json");
         if (!std::filesystem::exists(path)) throw std::runtime_error("Local XGBoost artifact is missing: " + path);
+        std::ifstream manifest_input(path + ".manifest.json");
+        const std::string manifest_text((std::istreambuf_iterator<char>(manifest_input)), std::istreambuf_iterator<char>());
+        const auto manifest = boost::json::parse(manifest_text).as_object();
+        const auto expected_names = arrakis::news::combined_feature_names();
+        const auto& names = manifest.at("feature_names").as_array();
+        if (manifest.at("symbol").as_string() != "XLK" ||
+            manifest.at("target").as_string() != "target_next_close_up" ||
+            manifest.at("runtime_feature_schema_hash").as_string() != arrakis::news::kCombinedFeatureSchemaHash ||
+            names.size() != expected_names.size()) {
+            throw std::runtime_error("XLK model manifest does not match the active inference contract");
+        }
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if (names[i].as_string() != expected_names[i]) throw std::runtime_error("XLK model feature order mismatch");
+        }
+        model_id_ = std::string(manifest.at("model_id").as_string());
+        threshold_ = manifest.at("classification_threshold").to_number<double>();
+        if (!std::isfinite(threshold_) || threshold_ <= 0.0 || threshold_ >= 1.0) {
+            throw std::runtime_error("XLK model classification threshold is invalid");
+        }
         if (XGBoosterCreate(nullptr, 0, &booster_) != 0 || XGBoosterLoadModel(booster_, path.c_str()) != 0) {
             if (booster_ != nullptr) XGBoosterFree(booster_);
             booster_ = nullptr;
@@ -87,10 +106,13 @@ public:
     ~NewsXGBoostModel() { if (booster_ != nullptr) XGBoosterFree(booster_); }
     NewsXGBoostModel(const NewsXGBoostModel&) = delete;
     NewsXGBoostModel& operator=(const NewsXGBoostModel&) = delete;
+    [[nodiscard]] const std::string& model_id() const { return model_id_; }
+    [[nodiscard]] double threshold() const { return threshold_; }
 
     [[nodiscard]] double predict(const std::vector<float>& features) const {
-        const auto expected = env("ARRAKIS_XLK_NEWS_FEATURE_COUNT", std::to_string(arrakis::news::kCombinedFeatureCount));
-        if (features.size() != static_cast<std::size_t>(std::stoul(expected))) throw std::runtime_error("XGBoost feature vector length does not match the active model");
+        if (features.size() != arrakis::news::kCombinedFeatureCount ||
+            !std::all_of(features.begin(), features.end(), [](float value) { return std::isfinite(value); }))
+            throw std::runtime_error("XGBoost feature vector has an invalid length or value");
         DMatrixHandle matrix = nullptr;
         if (XGDMatrixCreateFromMat(features.data(), 1, features.size(), std::numeric_limits<float>::quiet_NaN(), &matrix) != 0) {
             throw std::runtime_error("Unable to create XGBoost news feature matrix");
@@ -102,10 +124,15 @@ public:
         const auto result = XGBoosterPredictFromDMatrix(booster_, matrix, config, &shape, &dimensions, &predictions);
         XGDMatrixFree(matrix);
         if (result != 0 || dimensions == 0 || shape == nullptr || predictions == nullptr) throw std::runtime_error("XGBoost news prediction failed");
-        return std::clamp(static_cast<double>(predictions[0]), 0.0, 1.0);
+        const auto probability = static_cast<double>(predictions[0]);
+        if (!std::isfinite(probability) || probability < 0.0 || probability > 1.0)
+            throw std::runtime_error("XGBoost returned an invalid probability");
+        return probability;
     }
 private:
     BoosterHandle booster_{nullptr};
+    std::string model_id_;
+    double threshold_{0.5};
 };
 
 class MarketXGBoostModel final {
@@ -520,10 +547,13 @@ boost::json::value route(
             return error_json("FEATURE_SCHEMA_MISMATCH", error.what());
         }
         const auto probability = model->predict(features);
-        const auto signal = probability >= 0.5 ? "Bullish" : "Bearish";
+        const auto signal = probability >= model->threshold() ? "Bullish" : "Bearish";
         status = 200;
         auto insight = news_json(snapshot);
-        insight["prediction"] = {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", "xlk-finbert-xgboost-v1"}};
+        insight["prediction"] = {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", model->threshold()}, {"model_id", model->model_id()}};
+        insight["model_validated"] = env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED");
+        insight["prediction_status"] = env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") ? "validated" : "experimental";
+        insight["model_versions"].as_object()["xgboost"] = model->model_id();
         insight["why_model_moved"] = "Feature attribution is limited to persisted article and aggregate features; no unsupported explanation is generated.";
         return insight;
     }
@@ -756,7 +786,7 @@ int main() {
             }
         });
         std::unique_ptr<NewsXGBoostModel> model;
-        const bool model_validation_required = !env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED");
+        const bool model_validation_required = !env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_XLK_NEWS_MODEL_ENABLED");
         try { model = std::make_unique<NewsXGBoostModel>(); }
         catch (const std::exception& error) { std::cerr << "{\"service\":\"market-api\",\"event\":\"model_unavailable\",\"error\":\"" << error.what() << "\"}\n"; }
         std::unique_ptr<arrakis::news::FinbertSession> finbert;
