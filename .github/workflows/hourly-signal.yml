@@ -488,4 +488,7 @@ jobs:
             exit 0
           fi
           git commit -m "chore: pipeline heartbeat $(jq -r '.trading_date' .github/heartbeat/last-run.json) [skip ci]"
-          git push
+          # A deployment may land while inference runs. Replay the heartbeat
+          # on the current branch without discarding any intervening code.
+          git pull --rebase origin master
+          git push origin HEAD:master

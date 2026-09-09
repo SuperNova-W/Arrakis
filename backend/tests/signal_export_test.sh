@@ -19,7 +19,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 if [[ "$url" == *'/news?'* ]]; then
-    printf '%s' '{"symbol":"XLK","date":"2026-09-08","publication_cutoff":"2026-09-08T20:00:00Z","coverage_status":"complete","articles":[{"headline":"A headline","body":"licensed body"}]}' > "$output"
+    if [ "${TEST_MISSING_CITATIONS:-false}" = true ]; then
+        printf '%s' '{"features":{"article_count":3},"articles":[]}' > "$output"
+    else
+        printf '%s' '{"symbol":"XLK","date":"2026-09-08","publication_cutoff":"2026-09-08T20:00:00Z","coverage_status":"complete","articles":[{"headline":"A headline","body":"licensed body"}]}' > "$output"
+    fi
     printf 200
 elif [ "$TEST_RESPONSE" = transport ]; then
     exit 7
@@ -46,4 +50,7 @@ for script in export_daily_signal.sh export_market_signals.sh; do
         cmp "$task_tmp/preserved.json" "$file"
     done
 done
+if TEST_MISSING_CITATIONS=true TEST_RESPONSE=NO_VALIDATED_MODEL bash "$backend_root/scripts/export_daily_signal.sh" >/dev/null 2>&1; then
+    echo 'FAIL: news counts without citations must block publication' >&2; exit 1
+fi
 echo 'PASS: validation refusal is publishable; provider, model and transport failures preserve the last good result'

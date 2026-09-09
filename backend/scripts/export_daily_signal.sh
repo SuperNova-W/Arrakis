@@ -49,6 +49,13 @@ if [ "$news_status" != "200" ]; then
     exit 1
 fi
 
+# The daily aggregate and its citations must agree. This catches a failed or
+# incorrectly filtered article query even when the endpoint accidentally returns 200.
+if ! jq -e '((.features.article_count // 0) <= 0) or ((.articles // []) | length > 0)' "$news_body" >/dev/null; then
+    echo "FATAL: daily news features contain articles but the API returned no citations." >&2
+    exit 1
+fi
+
 if [ "$insights_status" = "200" ]; then
     # Validated model enabled: /insights is a superset of /news.
     merged=$(jq -s '.[0] * .[1] + {prediction_error: null}' "$news_body" "$insights_body")
