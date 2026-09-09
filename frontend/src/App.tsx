@@ -17,7 +17,7 @@ import { FinnhubError } from './finnhub/client'
 import { calculateStatistics } from './finnhub/indicators'
 import { configuredFinnhubKey } from './finnhub/key'
 import { useFinnhubProfile, useFinnhubQuote, useIndicators } from './finnhub/hooks'
-import type { Candle, ChartRange, ChartStyle, IndicatorKey } from './finnhub/types'
+import type { Candle, ChartRange, ChartStyle, IndicatorKey, Quote } from './finnhub/types'
 import { TwelveDataError } from './twelveData/client'
 import { useTwelveDataCandles } from './twelveData/hooks'
 import { twelveDataRangeRequest } from './twelveData/ranges'
@@ -84,7 +84,6 @@ function Shell({ children }: { children: React.ReactNode }) {
       <Link to="/" className="brand"><span className="brand-mark">A</span><span>Arrakis</span></Link>
       <nav className="top-nav" aria-label="Primary navigation">
         <NavLink to="/"><LayoutDashboard size={16}/><span>ETF dashboard</span></NavLink>
-        <NavLink to="/recommendation"><BookOpen size={16}/><span>Recommendations</span></NavLink>
       </nav>
     </header>
     <main id="main-content" tabIndex={-1}>{children}</main>
@@ -107,12 +106,42 @@ function FinnhubErrorState({ error, retry, compact = false, provider = 'Finnhub'
   </div>
 }
 
+function MiniPriceChart({ symbol, quote }: { symbol: string; quote: Quote | null }) {
+  const values = quote ? [quote.open, quote.low, quote.current, quote.high] : []
+  if (!values.length) return <div className="mini-chart mini-chart-empty" role="img" aria-label={`No ${symbol} price chart available`}><span>Chart unavailable</span></div>
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const spread = max - min || Math.max(max * 0.01, 1)
+  const polyline = values.map((value, index) => `${(index / Math.max(values.length - 1, 1)) * 100},${92 - ((value - min) / spread) * 76}`).join(' ')
+  const rising = values.at(-1)! >= values[0]!
+  return <div className="mini-chart" role="img" aria-label={`${symbol} today's price range chart, ${rising ? 'up' : 'down'} from the opening price`}>
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points={polyline} fill="none" stroke={rising ? '#16845f' : '#c84d4d'} strokeWidth="3" vectorEffect="non-scaling-stroke"/></svg>
+    <div className={`mini-chart-label ${rising ? 'up' : 'down'}`}><span>Today</span><span>{rising ? 'Up' : 'Down'}</span></div>
+  </div>
+}
+
+function TileRecommendation({ symbol }: { symbol: string }) {
+  const ml = useMlRecommendation(currentMarketDate(), symbol, true)
+  const document = ml.news.data ?? ml.insights.data ?? ml.prediction.data
+  const prediction = document?.prediction
+  if (ml.loading && !document) return <div className="tile-recommendation" aria-live="polite"><span className="tile-recommendation-label">Forecast</span><span className="tile-recommendation-loading">Loading…</span></div>
+  if (!prediction) return <div className="tile-recommendation tile-recommendation-empty"><span className="tile-recommendation-label">Forecast</span><b>Not available yet</b><small>{document?.date ? `Last update · ${document.date}` : 'Research is still collecting data'}</small></div>
+  const probability = prediction.probability_positive_return
+  return <div className="tile-recommendation">
+    <div className="tile-recommendation-head"><span className="tile-recommendation-label">Forecast</span><span className={`signal-pill ${prediction.direction.toLowerCase()}`}>{prediction.direction}</span></div>
+    <div className="tile-recommendation-probability"><strong>{(probability * 100).toFixed(1)}%</strong><span>chance of a higher close</span></div>
+    <div className="tile-recommendation-bar" aria-hidden="true"><i style={{ width: `${probability * 100}%` }}/></div>
+  </div>
+}
+
 function QuoteCard({ etf, apiKey }: { etf: EtfDefinition; apiKey: string }) {
   const quote = useFinnhubQuote(etf.symbol, apiKey)
   return <Link to={`/etfs/${etf.symbol}`} className="etf-card">
     <div className="etf-card-top"><div><b className="ticker">{etf.symbol}</b><span>{etf.name}</span></div><span className={`category-tag ${etf.category}`}>{etf.category === 'sector' ? 'Sector' : 'Broader market'}</span></div>
     {quote.loading && !quote.data ? <div className="quote-skeleton"/> : quote.error && !quote.data ? <div className="quote-error"><span>Price unavailable</span><small>Open for details</small></div> : <div className="etf-price"><strong>{formatPrice(quote.data?.current)}</strong><span className={(quote.data?.changePercent ?? 0) >= 0 ? 'positive' : 'negative'}>{formatPercent(quote.data?.changePercent)}</span></div>}
     <div className="quote-range"><span>Day range</span><b>{formatPrice(quote.data?.low)} – {formatPrice(quote.data?.high)}</b></div>
+    <MiniPriceChart symbol={etf.symbol} quote={quote.data}/>
+    <TileRecommendation symbol={etf.symbol}/>
     <div className="etf-card-foot"><span>{quote.cached ? 'Last available price' : 'Updated'} · {formatTimestamp(quote.data?.timestamp)}</span><ChevronRight size={15}/></div>
   </Link>
 }
@@ -122,7 +151,7 @@ function Dashboard({ apiKey }: { apiKey: string }) {
   const contexts = ETF_UNIVERSE.filter(etf => etf.category === 'context')
   return <>
     <Topbar eyebrow={`MARKET OVERVIEW · ${marketStatus().toUpperCase()}`} title="ETF research dashboard"/>
-    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Choose a fund to see its price history and research outlook. Prices supplied by Finnhub.</span></div></div>
+    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Each tile includes a recent price chart and its latest research outlook. Prices supplied by Finnhub.</span></div></div>
     <EtfSection title="Sector ETFs" items={sectors} apiKey={apiKey}/>
     <EtfSection title="Market context" items={contexts} apiKey={apiKey}/>
   </>
@@ -280,7 +309,9 @@ function Metric({ label, value, tone = '' }: { label: string; value: string; ton
   return <div className="metric"><span>{label}</span><b className={tone}>{value}</b></div>
 }
 
-function Recommendation() {
+// Kept exportable for backwards-compatible embeds; the dashboard is the only
+// navigation surface and owns recommendations in each ETF tile.
+export function Recommendation() {
   const [symbol, setSymbol] = useState('XLK')
   const [showAllArticles, setShowAllArticles] = useState(false)
   const [date, setDate] = useState(currentMarketDate())
@@ -351,7 +382,6 @@ function MlErrorState({ error, retry }: { error: MlApiError; retry?: () => void 
 function RouterView({ apiKey }: { apiKey: string }) {
   const path = window.location.pathname
   if (path.startsWith('/etfs/')) return <ETFDetail apiKey={apiKey}/>
-  if (path === '/recommendation') return <Recommendation/>
   return <Dashboard apiKey={apiKey}/>
 }
 

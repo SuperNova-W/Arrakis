@@ -98,3 +98,28 @@ main{padding-bottom:36px}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .price-table{margin-top:16px;color:#294252;font-size:14px}.price-table summary{cursor:pointer;min-height:44px;padding:12px 0}.price-table p{line-height:1.6}.price-table-scroll{overflow:auto}.price-table table{min-width:650px;background:#fff}.price-table th,.price-table td{font-size:13px;padding:12px;color:#294252;background:#fff}.price-table th{background:#f1f5f8}.price-table caption{text-align:left;padding:12px;font-weight:600}
 @media(max-width:600px){.topbar-actions>.date-control{flex:0 0 100%}.topbar-actions>.outline-btn{flex:0 0 auto}}
+
+/* Forecasts belong to the fund they describe, so the dashboard card is a
+   complete scan: quote, recent movement, then the current outlook. */
+.mini-chart{height:72px;margin:14px 0 8px;position:relative;border-top:1px solid #edf1f3;border-bottom:1px solid #edf1f3;padding:9px 0 18px}
+.mini-chart svg{display:block;width:100%;height:43px;overflow:visible}
+.mini-chart-label{position:absolute;left:0;right:0;bottom:1px;display:flex;justify-content:space-between;color:#7b8b95;font-size:11px;line-height:1.4}
+.mini-chart-label span:last-child{font-weight:700}
+.mini-chart-label.up span:last-child{color:#16845f}
+.mini-chart-label.down span:last-child{color:#c84d4d}
+.mini-chart-empty{display:flex;align-items:center;justify-content:center;color:#81919b;font-size:12px}
+.mini-chart-loading{background:linear-gradient(110deg,#f1f5f7,#fff,#f1f5f7);background-size:200% 100%;animation:skeleton-shimmer 1.6s infinite;border-radius:3px}
+.tile-recommendation{border-top:1px solid #e3e9ee;padding-top:12px;margin-top:5px;display:grid;gap:7px}
+.tile-recommendation-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tile-recommendation-label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:#718393;font-weight:700}
+.tile-recommendation .signal-pill{font-size:12px;padding:4px 8px}
+.tile-recommendation-probability{display:flex;align-items:baseline;gap:8px}
+.tile-recommendation-probability strong{font-size:22px;color:#1b8061;font-weight:650}
+.tile-recommendation-probability span{font-size:12px;color:#526b79;line-height:1.4}
+.tile-recommendation-bar{height:5px;background:#e5ecee;border-radius:5px;overflow:hidden}
+.tile-recommendation-bar i{display:block;height:100%;background:#4e927c;border-radius:5px}
+.tile-recommendation-empty{min-height:66px}
+.tile-recommendation-empty b{font-size:14px;color:#40596a;font-weight:600}
+.tile-recommendation small,.tile-recommendation-loading{font-size:12px;color:#718393}
+.tile-recommendation-empty small{margin-top:-3px}
+@media(max-width:600px){.mini-chart{height:76px}.tile-recommendation-probability{align-items:flex-start;flex-direction:column;gap:1px}}
