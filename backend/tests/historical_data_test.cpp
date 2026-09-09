@@ -9,6 +9,37 @@
 
 namespace {
 
+void requests_api_routes_and_rejects_html() {
+    using namespace arrakis::historical_data;
+    std::vector<std::string> requests;
+    FinnhubClient client({.api_key = "test-key"},
+        [&](std::string_view host, std::string_view target, std::chrono::seconds) {
+            if (host != "finnhub.io") throw std::runtime_error("wrong Finnhub host");
+            requests.emplace_back(target);
+            if (target.starts_with("/api/v1/company-news?")) {
+                return std::string{R"([{"url":"https://example.com/article","source":"Example","headline":"News","summary":"Summary","datetime":1788890400}])"};
+            }
+            if (target.starts_with("/api/v1/stock/candle?")) return std::string{R"({"s":"no_data"})"};
+            return std::string{"<!doctype html><html>Website</html>"};
+        });
+    const auto news = client.get_company_news("XLK", "2026-09-08", "2026-09-08");
+    if (news.size() != 1 || news.front().headline != "News" ||
+        requests.front() != "/api/v1/company-news?symbol=XLK&from=2026-09-08&to=2026-09-08&token=test-key") {
+        throw std::runtime_error("company news must call the API and parse its response");
+    }
+    static_cast<void>(client.get_candles("XLK", "5", parse_datetime("2026-09-08T13:30:00Z"), parse_datetime("2026-09-08T20:00:00Z")));
+    if (!requests.back().starts_with("/api/v1/stock/candle?symbol=XLK&resolution=5&")) {
+        throw std::runtime_error("candle request lost the API prefix");
+    }
+    FinnhubClient html_client({.api_key = "test-key"}, [](auto, auto, auto) { return std::string{"<html>Website</html>"}; });
+    bool rejected = false;
+    try { static_cast<void>(html_client.get_company_news("XLK", "2026-09-08", "2026-09-08")); }
+    catch (const std::runtime_error& error) {
+        rejected = std::string_view{error.what()}.find("invalid JSON") != std::string_view::npos;
+    }
+    if (!rejected) throw std::runtime_error("HTML must produce an actionable failure, not empty news");
+}
+
 void loads_api_key_from_dotenv_file() {
     const auto temp_dir = std::filesystem::temp_directory_path() / "arrakis_dotenv_test";
     std::filesystem::create_directories(temp_dir);
@@ -30,6 +61,7 @@ int main() {
     using namespace arrakis::historical_data;
 
     loads_api_key_from_dotenv_file();
+    requests_api_routes_and_rejects_html();
 
     const auto start = parse_datetime("2024-01-01T00:00:00Z");
     const auto end = parse_datetime("2024-03-01T00:00:00Z");

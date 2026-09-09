@@ -335,35 +335,19 @@ jobs:
       - name: Ingest constituent news
         if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
         working-directory: backend
-        # --finnhub-poll runs one full constituent pass immediately, then sleeps.
-        # We want only the first pass, so we stop it once poll_complete is
-        # logged. Pacing is ~1.5s per ticker across ~55 tickers, so a pass takes
-        # roughly 90s. A --finnhub-once mode would make this a batch job by
-        # design rather than by orchestration; see the deployment doc.
+        # One-shot ingestion exits nonzero on an incomplete provider poll.
         env:
           NEWS_POLL_LOOKBACK_DAYS: '3'
-          NEWS_POLL_INTERVAL_SECONDS: '900'
+          NEWS_TRADING_DATE: ${{ steps.window.outputs.date }}
           XLK_HOLDINGS_HISTORY: ${{ github.workspace }}/backend/data/metadata/xlk_holdings_history.csv
         run: |
-          set -uo pipefail
-          timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-poll XLK > >(tee /tmp/ingest.log) 2>&1 &
-          pid=$!
-          for _ in $(seq 1 120); do
-            grep -q '"event":"poll_complete"' /tmp/ingest.log && break
-            sleep 5
-          done
-          kill -INT "$pid" 2>/dev/null || true
-          wait "$pid" 2>/dev/null || true
-          grep -q '"event":"poll_complete"' /tmp/ingest.log || {
-            echo "::error::news-ingestion never completed a poll pass." >&2; exit 1; }
+          set -euo pipefail
+          timeout --signal=INT 600 ./build/ci/news-ingestion --finnhub-once XLK 2>&1 | tee /tmp/ingest.log
 
       - name: Enrich with FinBERT and build daily features
         if: steps.window.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
         working-directory: backend
-        # news-enricher is a for(;;) daemon that writes etf_daily_news_features
-        # after each article, so we run it under timeout and then assert the row
-        # exists. NEWS_PREDICTION_WINDOW_START_UNIX_MS bounds the aggregate to
-        # this trading day, matching the batch builder's per-day grouping.
+        # Require a successful, complete one-shot enrichment before publication.
         env:
           ARRAKIS_FINBERT_ONNX_PATH: ${{ github.workspace }}/backend/models/finbert/model.onnx
           ARRAKIS_FINBERT_VOCAB_PATH: ${{ github.workspace }}/backend/models/finbert/vocab.txt
@@ -374,8 +358,8 @@ jobs:
           NEWS_ENRICHER_ONCE: 'true'
           NEWS_ENRICHER_IDLE_POLLS: '10'
         run: |
-          set -uo pipefail
-          timeout --signal=INT 900 ./build/ci/news-enricher 2>&1 | tee /tmp/enrich.log || true
+          set -euo pipefail
+          timeout --signal=INT 900 ./build/ci/news-enricher 2>&1 | tee /tmp/enrich.log
           count=$(psql "$SUPABASE_DB_URL" -tAc \
             "SELECT count(*) FROM etf_daily_news_features WHERE symbol='XLK' AND trading_date='${{ steps.window.outputs.date }}'")
           if [ "$count" = "0" ]; then

@@ -25,7 +25,7 @@ for symbol in $symbols; do
     trap 'rm -f "$body"' EXIT
     status=$(curl --silent --show-error --max-time 30 \
         --output "$body" --write-out '%{http_code}' \
-        "${api_url}/api/v1/etfs/${symbol}/prediction?date=${signal_date}" || printf '000')
+        "${api_url}/api/v1/etfs/${symbol}/prediction?date=${signal_date}")
 
     if [ "$status" = "200" ]; then
         document=$(jq \
@@ -44,6 +44,10 @@ for symbol in $symbols; do
                 pipeline_run: $run_url
              }' "$body")
     else
+        if [ "$status" != "503" ] || ! jq -e '.error.code == "NO_VALIDATED_MODEL"' "$body" >/dev/null; then
+            echo "FATAL: ${symbol} prediction returned an unexpected failure (HTTP ${status})." >&2
+            exit 1
+        fi
         code=$(jq -r '.error.code // empty' "$body" 2>/dev/null || true)
         code=${code:-MODEL_UNAVAILABLE}
         message=$(jq -r '.error.message // empty' "$body" 2>/dev/null || true)

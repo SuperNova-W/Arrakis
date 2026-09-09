@@ -190,7 +190,8 @@ int main(int argc, char** argv) {
         } else if (argc == 5 && std::string_view(argv[1]) == "--finnhub") {
             arrakis::historical_data::FinnhubClient client({.api_key = env("FINNHUB_API_KEY")});
             for (const auto& story : client.get_company_news(argv[2], argv[3], argv[4])) publish(from_finnhub(story, argv[2]));
-        } else if (argc == 3 && std::string_view(argv[1]) == "--finnhub-poll") {
+        } else if (argc == 3 && (std::string_view(argv[1]) == "--finnhub-poll" || std::string_view(argv[1]) == "--finnhub-once")) {
+            const bool run_once = std::string_view(argv[1]) == "--finnhub-once";
             const std::string symbol = argv[2];
             const auto interval = std::chrono::seconds{env_int("NEWS_POLL_INTERVAL_SECONDS", 900)};
             const auto lookback = std::chrono::hours{24 * env_int("NEWS_POLL_LOOKBACK_DAYS", 3)};
@@ -209,7 +210,9 @@ int main(int argc, char** argv) {
                       << membership.last_snapshot_date() << "\"}\n";
 
             for (;;) {
-                const auto now = std::chrono::system_clock::now();
+                const auto requested_date = env("NEWS_TRADING_DATE");
+                const auto now = requested_date.empty() ? std::chrono::system_clock::now()
+                    : arrakis::historical_data::parse_datetime(requested_date + "T12:00:00Z");
                 const auto from = utc_date(now - lookback);
                 const auto to = utc_date(now);
                 std::size_t skipped = 0;
@@ -258,6 +261,13 @@ int main(int argc, char** argv) {
                                   << json_escape(ticker) << "\",\"error\":\"" << json_escape(error.what()) << "\"}\n";
                     }
                 }
+                // A batch is publishable only after every provider request succeeds.
+                // Empty successful responses are legitimate; failed requests are not
+                // evidence of an empty news day. Never overwrite good data with them.
+                if (run_once && failed > 0) {
+                    throw std::runtime_error("News poll incomplete: " + std::to_string(failed) +
+                        " of " + std::to_string(requested) + " requests failed; refusing publication");
+                }
                 for (const auto& [article_id, article] : batch) {
                     static_cast<void>(article_id);
                     publish(article);
@@ -269,10 +279,11 @@ int main(int argc, char** argv) {
                           << ",\"requests\":" << requested << ",\"failed_requests\":" << failed
                           << ",\"unique_articles\":" << batch.size()
                           << ",\"published_total\":" << published << "}\n";
+                if (run_once) break;
                 std::this_thread::sleep_for(interval);
             }
         } else {
-            throw std::invalid_argument("Usage: news-ingestion --fixture <jsonl> | --finnhub <symbol> <from YYYY-MM-DD> <to YYYY-MM-DD> | --finnhub-poll <etf-symbol> (polls the ETF plus its point-in-time constituents)");
+            throw std::invalid_argument("Usage: news-ingestion --fixture <jsonl> | --finnhub <symbol> <from YYYY-MM-DD> <to YYYY-MM-DD> | --finnhub-poll <etf-symbol> | --finnhub-once <etf-symbol>");
         }
         producer.flush(std::chrono::seconds{10});
         std::cout << "published_news_articles=" << published << "\n";

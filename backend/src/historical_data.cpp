@@ -114,6 +114,7 @@ using tcp = asio::ip::tcp;
 
     tcp::resolver resolver(io_context);
     ssl::stream<tcp::socket> stream(io_context, tls_context);
+    stream.set_verify_callback(ssl::host_name_verification(std::string(host)));
 
     const auto endpoints = resolver.resolve(std::string(host), "443");
     asio::connect(stream.next_layer(), endpoints.begin(), endpoints.end());
@@ -134,7 +135,9 @@ using tcp = asio::ip::tcp;
     beast::flat_buffer buffer;
     http::response<http::string_body> response;
     http::read(stream, buffer, response);
-    stream.shutdown();
+    // A complete HTTP response remains valid if the peer closes without a TLS close_notify.
+    boost::system::error_code shutdown_error;
+    stream.shutdown(shutdown_error);
 
     if (response.result() == http::status::moved_permanently || response.result() == http::status::found ||
         response.result() == http::status::temporary_redirect || response.result() == http::status::permanent_redirect) {
@@ -250,7 +253,22 @@ using tcp = asio::ip::tcp;
 
 }  // namespace
 
-FinnhubClient::FinnhubClient(FinnhubClientConfig config) : config_(std::move(config)) {
+FinnhubClient::FinnhubClient(FinnhubClientConfig config, HttpGet http_get)
+    : config_(std::move(config)), http_get_(http_get ? std::move(http_get) : fetch_http_body) {
+    // Requests must use the configured API prefix. The website's /company-news
+    // route redirects to HTML with HTTP 200, which used to fail JSON parsing on
+    // every constituent while the scheduled job still reported success.
+    constexpr std::string_view scheme = "https://";
+    if (!config_.base_url.starts_with(scheme)) throw std::invalid_argument("Finnhub base URL must use HTTPS");
+    const auto authority = config_.base_url.substr(scheme.size());
+    const auto slash = authority.find('/');
+    host_ = authority.substr(0, slash);
+    api_path_ = slash == std::string::npos ? "" : authority.substr(slash);
+    while (api_path_.ends_with('/')) api_path_.pop_back();
+    if (host_.empty() || host_.find_first_of("@?#:") != std::string::npos ||
+        api_path_.find_first_of("?#") != std::string::npos) {
+        throw std::invalid_argument("Invalid Finnhub base URL");
+    }
     if (config_.api_key.empty()) {
         try {
             config_.api_key = read_environment("FINNHUB_API_KEY");
@@ -302,11 +320,11 @@ CandleResponse FinnhubClient::get_candles(
     const auto from_seconds = std::chrono::duration_cast<std::chrono::seconds>(from.time_since_epoch()).count();
     const auto to_seconds = std::chrono::duration_cast<std::chrono::seconds>(to.time_since_epoch()).count();
     std::ostringstream target;
-    target << "/stock/candle?symbol=" << symbol << "&resolution=" << resolution
+    target << api_path_ << "/stock/candle?symbol=" << symbol << "&resolution=" << resolution
            << "&from=" << from_seconds << "&to=" << to_seconds << "&token=" << config_.api_key;
 
     try {
-        const auto body = fetch_http_body("finnhub.io", target.str(), std::chrono::seconds{config_.request_timeout_seconds});
+        const auto body = http_get_(host_, target.str(), std::chrono::seconds{config_.request_timeout_seconds});
         return parse_finnhub_candle_response(body);
     } catch (const std::exception& finnhub_error) {
         // The Finnhub key used by the deployed news path does not grant access
@@ -320,7 +338,7 @@ CandleResponse FinnhubClient::get_candles(
         yahoo_target << "/v8/finance/chart/" << symbol << "?period1=" << from_seconds << "&period2=" << to_seconds
                      << "&interval=1d&events=history&includeAdjustedClose=true";
         try {
-            const auto yahoo_body = fetch_http_body(
+            const auto yahoo_body = http_get_(
                 "query1.finance.yahoo.com", yahoo_target.str(), std::chrono::seconds{config_.request_timeout_seconds});
             return parse_yahoo_chart_response(yahoo_body);
         } catch (const std::exception& yahoo_error) {
@@ -332,9 +350,11 @@ CandleResponse FinnhubClient::get_candles(
 
 std::vector<NewsStory> FinnhubClient::get_company_news(std::string_view symbol, std::string_view from_date, std::string_view to_date) {
     std::ostringstream target;
-    target << "/company-news?symbol=" << symbol << "&from=" << from_date << "&to=" << to_date << "&token=" << config_.api_key;
-    const auto body = fetch_http_body("finnhub.io", target.str(), std::chrono::seconds{config_.request_timeout_seconds});
-    const auto value = boost::json::parse(body);
+    target << api_path_ << "/company-news?symbol=" << symbol << "&from=" << from_date << "&to=" << to_date << "&token=" << config_.api_key;
+    const auto body = http_get_(host_, target.str(), std::chrono::seconds{config_.request_timeout_seconds});
+    boost::system::error_code parse_error;
+    const auto value = boost::json::parse(body, parse_error);
+    if (parse_error) throw std::runtime_error{"Finnhub company-news returned invalid JSON; verify the API endpoint and provider availability"};
     if (!value.is_array()) throw std::runtime_error{"Finnhub company-news response is not an array"};
     std::vector<NewsStory> output;
     for (const auto& item : value.as_array()) {

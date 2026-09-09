@@ -36,7 +36,7 @@ trap 'rm -f "$news_body" "$insights_body"' EXIT
 fetch() {
     curl --silent --show-error --max-time 30 \
         --output "$2" --write-out '%{http_code}' \
-        "${api_url}/api/v1/etfs/XLK/$1?date=${signal_date}" || printf '000'
+        "${api_url}/api/v1/etfs/XLK/$1?date=${signal_date}"
 }
 
 news_status=$(fetch news "$news_body")
@@ -53,6 +53,13 @@ if [ "$insights_status" = "200" ]; then
     # Validated model enabled: /insights is a superset of /news.
     merged=$(jq -s '.[0] * .[1] + {prediction_error: null}' "$news_body" "$insights_body")
 else
+    # Only an explicit validation refusal is a normal no-forecast result.
+    # Transport errors, missing artifacts, schema failures and server errors
+    # must fail the job instead of replacing the last good public document.
+    if [ "$insights_status" != "503" ] || ! jq -e '.error.code == "NO_VALIDATED_MODEL"' "$insights_body" >/dev/null; then
+        echo "FATAL: /insights returned an unexpected failure (HTTP ${insights_status})." >&2
+        exit 1
+    fi
     # Gate closed (expected). Record the refusal verbatim; guarantee that
     # `prediction` is absent rather than present-and-null.
     # NOTE: bind the slurped array before piping to .[0]; once you pipe, the

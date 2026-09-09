@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -94,7 +95,8 @@ struct SymbolSummary final {
 
 class FinnhubClient final {
   public:
-    explicit FinnhubClient(FinnhubClientConfig config);
+    using HttpGet = std::function<std::string(std::string_view, std::string_view, std::chrono::seconds)>;
+    explicit FinnhubClient(FinnhubClientConfig config, HttpGet http_get = {});
 
     [[nodiscard]] CandleResponse get_candles(
         std::string_view symbol,
@@ -111,6 +113,9 @@ class FinnhubClient final {
 
   private:
     FinnhubClientConfig config_;
+    HttpGet http_get_;
+    std::string host_;
+    std::string api_path_;
 };
 
 [[nodiscard]] std::string load_api_key_from_env_file(std::string_view directory = {});

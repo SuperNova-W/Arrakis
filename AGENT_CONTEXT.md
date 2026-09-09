@@ -253,3 +253,12 @@ When resuming:
 4. Review the user's work before introducing new material.
 5. Update the current project state after each meaningful milestone.
 6. Keep this document factual and concise.
+
+## 2026-09-08 deployed inference repair
+
+Current incident and repair details are in `backend/docs/inference-repair-2026-09-08.md`.
+The frontend is deployed on Vercel and reads scheduled research from Supabase. Finnhub C++ HTTP
+requests must preserve `/api/v1`; the previous website paths caused every news request to fail.
+Scheduled ingestion/enrichment and exporters must propagate operational failures. Preserve the
+model validation gate and distinguish forecast availability from delivery health. User-facing UI
+must use plain language and avoid environment variables, schema names, model IDs and error codes.

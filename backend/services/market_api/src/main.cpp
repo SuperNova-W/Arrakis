@@ -460,7 +460,7 @@ boost::json::value route(
         const auto age = latest ? std::chrono::duration_cast<std::chrono::seconds>(now - std::chrono::time_point_cast<std::chrono::seconds>(latest->bar_end)).count() : -1;
         return {{"database", database_healthy ? "ml-ready" : "unavailable"}, {"market_data_source", live_data ? "finnhub-websocket-via-kafka+database" : (database_healthy ? "database-fallback" : "finnhub-websocket-via-kafka")}, {"market_data_status", latest ? (age <= 120 ? "fresh" : "stale") : "waiting_for_stream"}, {"latest_bar_end", latest ? boost::json::value(iso_time(latest->bar_end)) : boost::json::value(nullptr)}, {"latest_bar_age_seconds", latest ? boost::json::value(age) : boost::json::value(nullptr)}, {"active_etfs", etfs.size()}, {"ml_available", model != nullptr || (market_models != nullptr && market_models->size() > 0)}, {"market_model_count", market_models == nullptr ? 0 : market_models->size()}};
     }
-    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[4] == "prediction") {
+    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[3] != "XLK" && path[4] == "prediction") {
         const auto symbol = path[3];
         if (!market.supports(symbol)) { status = 404; return error_json("UNKNOWN_ETF", "ETF is not in the configured universe."); }
         const auto date = query_value(target, "date");
@@ -524,7 +524,6 @@ boost::json::value route(
         status = 200;
         auto insight = news_json(snapshot);
         insight["prediction"] = {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", "xlk-finbert-xgboost-v1"}};
-        insight["dominant_themes"] = boost::json::array{"technology", "semiconductors", "software"};
         insight["why_model_moved"] = "Feature attribution is limited to persisted article and aggregate features; no unsupported explanation is generated.";
         return insight;
     }

@@ -219,14 +219,22 @@ export default function FinnhubChart({
 
   const display = hovered ?? candles.at(-1) ?? null
   return <div className="tv-chart-shell">
-    {display && <div className="chart-crosshair-readout" aria-live="polite">
+    {display && <div className="chart-crosshair-readout">
       <span>{new Date(display.time * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</span>
-      <b>O {currency(display.open)}</b>
-      <b>H {currency(display.high)}</b>
-      <b>L {currency(display.low)}</b>
-      <b>C {currency(display.close)}</b>
-      <b>Vol {Math.round(display.volume).toLocaleString()}</b>
+      <b>Open {currency(display.open)}</b>
+      <b>High {currency(display.high)}</b>
+      <b>Low {currency(display.low)}</b>
+      <b>Close {currency(display.close)}</b>
+      <b>Volume {Math.round(display.volume).toLocaleString()}</b>
     </div>}
-    <div ref={container} className="tv-chart" aria-label={`${symbol} Finnhub history and live OHLCV chart`}/>
+    <div ref={container} className="tv-chart" role="img" aria-label={`${symbol} price history. Recent prices are also available in the table below.`}/>
+    <details className="price-table"><summary>View recent prices as a table</summary>
+      <p>The last 20 price observations in the selected period. Use “Download prices” for the full history.</p>
+      <div className="price-table-scroll" role="region" aria-label="Recent prices" tabIndex={0}><table>
+        <caption>{symbol} recent prices · source: Twelve Data</caption>
+        <thead><tr>{['Date and time', 'Open', 'High', 'Low', 'Close', 'Volume'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+        <tbody>{candles.slice(-20).map(candle => <tr key={candle.time}><th scope="row">{new Date(candle.time * 1000).toLocaleString()}</th><td>{currency(candle.open)}</td><td>{currency(candle.high)}</td><td>{currency(candle.low)}</td><td>{currency(candle.close)}</td><td>{Math.round(candle.volume).toLocaleString()}</td></tr>)}</tbody>
+      </table></div>
+    </details>
   </div>
 }

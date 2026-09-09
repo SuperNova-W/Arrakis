@@ -97,6 +97,13 @@ interface MlState {
   refresh: () => void
 }
 
+const emptyState: Omit<MlState, 'refresh'> = {
+  loading: true,
+  prediction: { data: null, error: null },
+  news: { data: null, error: null },
+  insights: { data: null, error: null },
+}
+
 const SUPPORTED_CODES: MlErrorCode[] = ['MODEL_UNAVAILABLE', 'NO_VALIDATED_MODEL', 'FEATURE_SCHEMA_MISMATCH', 'ML_DATABASE_UNAVAILABLE', 'FEATURES_UNAVAILABLE', 'INVALID_DATE']
 
 function asErrorCode(code: string | undefined): MlErrorCode {
@@ -161,8 +168,15 @@ async function fetchDocument(date: string, symbol: string, signal: AbortSignal, 
   }
 
   const document = row.document
-  if (!document || typeof document.date !== 'string') {
+  if (!document || document.symbol !== symbol || document.date !== row.trading_date ||
+      (document.articles != null && !Array.isArray(document.articles))) {
     throw new MlApiError(`The research document for ${date} is malformed.`, 'FEATURES_UNAVAILABLE', response.status)
+  }
+  if (document.prediction && (row.model_validated !== true ||
+      !Number.isFinite(document.prediction.probability_positive_return) ||
+      document.prediction.probability_positive_return < 0 || document.prediction.probability_positive_return > 1 ||
+      !['Bullish', 'Neutral', 'Bearish'].includes(document.prediction.direction))) {
+    throw new MlApiError('The published forecast could not be verified.', 'MODEL_UNAVAILABLE')
   }
   // Trust the indexed columns over the embedded copy: they are what the
   // pipeline wrote and what the view ordered by.
@@ -192,15 +206,14 @@ function toError(error: unknown): MlApiError {
  */
 export function useMlRecommendation(date: string, symbol = 'XLK', latest = false): MlState {
   const [refreshKey, setRefreshKey] = useState(0)
-  const [state, setState] = useState<Omit<MlState, 'refresh'>>({
-    loading: true,
-    prediction: { data: null, error: null },
-    news: { data: null, error: null },
-    insights: { data: null, error: null },
-  })
+  // Key completed responses to the selection that requested them. Otherwise
+  // switching ETFs briefly displays the previous ETF's forecast under the new name.
+  const requestKey = `${symbol}:${date}:${latest}:${refreshKey}`
+  const [result, setResult] = useState<{ key: string; state: Omit<MlState, 'refresh'> } | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 20000)
     let cancelled = false
 
     void (async () => {
@@ -219,16 +232,18 @@ export function useMlRecommendation(date: string, symbol = 'XLK', latest = false
                 document.prediction_error?.http_status,
               ),
             }
-        setState({ loading: false, prediction, news: populated, insights: populated })
+        setResult({ key: requestKey, state: { loading: false, prediction, news: populated, insights: populated } })
       } catch (error) {
-        if (cancelled || controller.signal.aborted) return
+        if (cancelled) return
         const failure: EndpointState = { data: null, error: toError(error) }
-        setState({ loading: false, prediction: failure, news: failure, insights: failure })
+        setResult({ key: requestKey, state: { loading: false, prediction: failure, news: failure, insights: failure } })
+      } finally {
+        window.clearTimeout(timeout)
       }
     })()
 
-    return () => { cancelled = true; controller.abort() }
-  }, [date, latest, refreshKey, symbol])
+    return () => { cancelled = true; window.clearTimeout(timeout); controller.abort() }
+  }, [date, latest, requestKey, symbol])
 
-  return { ...state, refresh: () => setRefreshKey(value => value + 1) }
+  return { ...(result?.key === requestKey ? result.state : emptyState), refresh: () => setRefreshKey(value => value + 1) }
 }

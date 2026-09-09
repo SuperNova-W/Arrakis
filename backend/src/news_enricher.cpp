@@ -152,7 +152,12 @@ int main() {
                 persist_daily(window);
                 const auto enriched = arrakis::news::serialize_enriched_feature({article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms});
                 producer.publish(env("NEWS_ENRICHED_TOPIC", "news.enriched.features"), "XLK", enriched); producer.poll_events(std::chrono::milliseconds{0}); consumer.commit(*record);
-            } catch (const std::exception& error) { std::cerr << "{\"service\":\"news-enricher\",\"error\":\"" << error.what() << "\"}\n"; }
+            } catch (const std::exception& error) {
+                // A scheduled batch must not commit a partial daily snapshot as
+                // success after failed inference or persistence.
+                if (run_once) throw;
+                std::cerr << "{\"service\":\"news-enricher\",\"error\":\"" << error.what() << "\"}\n";
+            }
         }
     } catch (const std::exception& error) { std::cerr << "{\"service\":\"news-enricher\",\"fatal\":\"" << error.what() << "\"}\n"; return EXIT_FAILURE; }
 }
