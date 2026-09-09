@@ -41,7 +41,8 @@ function Link({ to, children, className = '' }: { to: string; children: React.Re
 }
 
 function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
-  const active = window.location.pathname === to || (to !== '/' && window.location.pathname.startsWith(to))
+  const dashboardPath = window.location.pathname === '/' || window.location.pathname === '/recommendation'
+  const active = to === '/' ? dashboardPath : window.location.pathname.startsWith(to)
   return <a className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} href={to}>{children}</a>
 }
 
@@ -151,7 +152,7 @@ function Dashboard({ apiKey }: { apiKey: string }) {
   const contexts = ETF_UNIVERSE.filter(etf => etf.category === 'context')
   return <>
     <Topbar eyebrow={`MARKET OVERVIEW · ${marketStatus().toUpperCase()}`} title="ETF research dashboard"/>
-    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Each tile includes a recent price chart and its latest research outlook. Prices supplied by Finnhub.</span></div></div>
+    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Each tile includes today’s price chart and its latest research outlook. Prices supplied by Finnhub.</span></div></div>
     <EtfSection title="Sector ETFs" items={sectors} apiKey={apiKey}/>
     <EtfSection title="Market context" items={contexts} apiKey={apiKey}/>
   </>
