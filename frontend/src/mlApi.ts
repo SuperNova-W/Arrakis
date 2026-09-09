@@ -46,7 +46,13 @@ export interface MlArticle {
   published_at: string
   sentiment_score: number
   positive_probability: number
+  neutral_probability: number
   negative_probability: number
+}
+
+export interface MlFeatureSnapshot {
+  schema?: string
+  values?: number[]
 }
 
 /** Why no prediction is present. Absent when a validated model produced one. */
@@ -61,11 +67,13 @@ export interface MlPayload {
   date: string
   coverage_status: 'complete' | 'partial' | 'empty' | 'stale' | string
   feature_schema_hash: string
+  latest_eligible_article?: string | null
   publication_cutoff?: string
   prediction?: MlPrediction
   prediction_error?: MlPredictionError | null
   dominant_themes?: string[]
   articles: MlArticle[]
+  features?: MlFeatureSnapshot
   research_only_disclaimer: string
   // Provenance stamped by the publishing pipeline.
   generated_at?: string

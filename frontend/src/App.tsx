@@ -23,7 +23,8 @@ import type { Candle, ChartRange, ChartStyle, IndicatorKey, Quote } from './finn
 import { TwelveDataError } from './twelveData/client'
 import { useTwelveDataCandles } from './twelveData/hooks'
 import { twelveDataRangeRequest } from './twelveData/ranges'
-import { MlApiError, useMlRecommendation } from './mlApi'
+import { MlApiError, useMlRecommendation, type MlPayload, type MlPrediction } from './mlApi'
+import { XLK_SIGNAL_MODEL } from './mlPipeline'
 
 const TWELVE_DATA_API_KEY = (import.meta.env.VITE_TWELVE_DATA_API_KEY ?? '').trim()
 
@@ -224,6 +225,108 @@ function batchInferenceStatus(state: ReturnType<typeof useMlRecommendation>): Ba
   return { tone: 'gated', label: `Updated · ${document.date}` }
 }
 
+function featureValue(document: MlPayload | null, name: string) {
+  const index = XLK_SIGNAL_MODEL.featureNames.indexOf(name)
+  const value = index >= 0 ? document?.features?.values?.[index] : undefined
+  return value != null && Number.isFinite(value) ? value : null
+}
+
+function averageArticleValue(document: MlPayload | null, key: 'positive_probability' | 'neutral_probability' | 'negative_probability' | 'sentiment_score') {
+  const articles = document?.articles ?? []
+  if (!articles.length) return null
+  const total = articles.reduce((sum, article) => sum + article[key], 0)
+  return total / articles.length
+}
+
+function formatRatio(value: number | null) {
+  return value == null ? '—' : `${(value * 100).toFixed(1)}%`
+}
+
+function formatScore(value: number | null) {
+  return value == null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}`
+}
+
+function formatCoverage(value?: string) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : '—'
+}
+
+function formatDateRange(start: string, end: string) {
+  const format = (value: string) => new Date(`${value}T12:00:00Z`).toLocaleDateString([], { month: 'short', year: 'numeric' })
+  return `${format(start)} – ${format(end)}`
+}
+
+function ModelStat({ label, value }: { label: string; value: string }) {
+  return <div className="ml-stat"><span>{label}</span><strong>{value}</strong></div>
+}
+
+function MlSignalSection({ document, prediction }: { document: MlPayload | null; prediction?: MlPrediction }) {
+  const articles = document?.articles ?? []
+  const articleCount = featureValue(document, 'article_count') ?? (articles.length || null)
+  const positiveTone = featureValue(document, 'positive_proportion') ?? averageArticleValue(document, 'positive_probability')
+  const neutralTone = featureValue(document, 'neutral_proportion') ?? averageArticleValue(document, 'neutral_probability')
+  const negativeTone = featureValue(document, 'negative_proportion') ?? averageArticleValue(document, 'negative_probability')
+  const averageTone = featureValue(document, 'average_sentiment') ?? averageArticleValue(document, 'sentiment_score')
+  const freshness = featureValue(document, 'news_freshness_hours')
+  const probability = prediction?.probability_positive_return ?? null
+  const status = document?.prediction_status === 'validated' ? 'Validated' : 'Research model'
+
+  return <section className="ml-signal-section" aria-labelledby="ml-signal-title">
+    <div className="ml-section-heading">
+      <div><div className="eyebrow">MODEL SIGNAL</div><h2 id="ml-signal-title">Signal detail</h2><p>Live output, current evidence, and historical checks for XLK.</p></div>
+      <span className={`ml-status ${document?.prediction_status === 'validated' ? 'validated' : ''}`}>{status}</span>
+    </div>
+
+    <div className="ml-signal-grid">
+      <div className="panel ml-signal-current">
+        <div className="panel-head"><div><div className="eyebrow">{XLK_SIGNAL_MODEL.signalModel.toUpperCase()} ESTIMATE</div><h3>{prediction?.direction ?? (document ? 'No estimate' : 'Checking')}</h3></div><span>{document?.date ?? '—'}</span></div>
+        <div className="ml-signal-probability"><strong>{formatRatio(probability)}</strong><span>estimated chance of a higher close</span></div>
+        <div className="confidence-track" aria-hidden="true"><i style={{ width: `${(probability ?? 0) * 100}%` }}/></div>
+        <div className="ml-stat-grid">
+          <ModelStat label="Decision level" value={prediction ? formatRatio(prediction.threshold) : '—'}/>
+          <ModelStat label="News articles" value={articleCount == null ? '—' : formatNumber(articleCount)}/>
+          <ModelStat label="Coverage" value={formatCoverage(document?.coverage_status)}/>
+          <ModelStat label="Signal date" value={document?.date ?? '—'}/>
+        </div>
+      </div>
+
+      <div className="panel ml-language-panel">
+        <div className="panel-head"><div><div className="eyebrow">LANGUAGE EVIDENCE</div><h3>{XLK_SIGNAL_MODEL.languageModel} read</h3></div><span>{articleCount == null ? '—' : `${formatNumber(articleCount)} analysed`}</span></div>
+        <div className="ml-stat-grid ml-tone-grid">
+          <ModelStat label="Positive tone" value={formatRatio(positiveTone)}/>
+          <ModelStat label="Neutral tone" value={formatRatio(neutralTone)}/>
+          <ModelStat label="Negative tone" value={formatRatio(negativeTone)}/>
+          <ModelStat label="Average tone" value={formatScore(averageTone)}/>
+          <ModelStat label="News freshness" value={freshness == null ? '—' : `${freshness.toFixed(1)} h`}/>
+          <ModelStat label="Latest article" value={document?.latest_eligible_article ? new Date(document.latest_eligible_article).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '—'}/>
+        </div>
+      </div>
+    </div>
+
+    <div className="ml-signal-grid ml-signal-grid-lower">
+      <div className="panel ml-input-panel">
+        <div className="eyebrow">INPUTS TO THE ESTIMATE</div><h3>{XLK_SIGNAL_MODEL.featureNames.length} measured signals</h3>
+        <div className="ml-input-list">
+          <div><span>Market and price context</span><strong>{XLK_SIGNAL_MODEL.marketFeatureCount}</strong><small>Returns, volatility, volume, and market comparison</small></div>
+          <div><span>News and language</span><strong>{XLK_SIGNAL_MODEL.newsFeatureCount}</strong><small>Tone, novelty, coverage, freshness, and text representation</small></div>
+        </div>
+      </div>
+
+      <div className="panel ml-evaluation-panel">
+        <div className="panel-head"><div><div className="eyebrow">HISTORICAL CHECK</div><h3>Chronological hold-out</h3></div><span>{formatDateRange(XLK_SIGNAL_MODEL.testStart, XLK_SIGNAL_MODEL.testEnd)}</span></div>
+        <div className="ml-stat-grid ml-evaluation-grid">
+          <ModelStat label="Held-out ROC AUC" value={XLK_SIGNAL_MODEL.testAuc.toFixed(3)}/>
+          <ModelStat label="Held-out accuracy" value={formatRatio(XLK_SIGNAL_MODEL.testAccuracy)}/>
+          <ModelStat label="Held-out log loss" value={XLK_SIGNAL_MODEL.testLogLoss.toFixed(3)}/>
+          <ModelStat label="Held-out observations" value={formatNumber(XLK_SIGNAL_MODEL.testRows)}/>
+          <ModelStat label="Training observations" value={formatNumber(XLK_SIGNAL_MODEL.trainingRows)}/>
+          <ModelStat label="Validation observations" value={formatNumber(XLK_SIGNAL_MODEL.validationRows)}/>
+        </div>
+        <div className="ml-periods"><span>Validation · {formatDateRange(XLK_SIGNAL_MODEL.validationStart, XLK_SIGNAL_MODEL.validationEnd)}</span><span>Test · {formatDateRange(XLK_SIGNAL_MODEL.testStart, XLK_SIGNAL_MODEL.testEnd)}</span></div>
+      </div>
+    </div>
+  </section>
+}
+
 function ETFDetail({ apiKey }: { apiKey: string }) {
   const symbol = window.location.pathname.split('/')[2]?.toUpperCase() ?? ''
   const definition = findEtf(symbol)
@@ -308,6 +411,8 @@ function ETFDetail({ apiKey }: { apiKey: string }) {
         <Metric label="Price observations" value={formatNumber(displayedCandles.length)}/>
       </div></div>
     </section>
+
+    {symbol === 'XLK' && <MlSignalSection document={batchInference.news.data ?? batchInference.insights.data ?? batchInference.prediction.data} prediction={batchInference.prediction.data?.prediction}/>}
   </>
 }
 
