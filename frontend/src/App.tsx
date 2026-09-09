@@ -226,8 +226,11 @@ function batchInferenceStatus(state: ReturnType<typeof useMlRecommendation>): Ba
 }
 
 function featureValue(document: MlPayload | null, name: string) {
-  const index = XLK_SIGNAL_MODEL.featureNames.indexOf(name)
-  const value = index >= 0 ? document?.features?.values?.[index] : undefined
+  const combinedIndex = XLK_SIGNAL_MODEL.featureNames.indexOf(name)
+  const newsIndex = combinedIndex >= XLK_SIGNAL_MODEL.marketFeatureCount
+    ? combinedIndex - XLK_SIGNAL_MODEL.marketFeatureCount
+    : -1
+  const value = newsIndex >= 0 ? document?.features?.values?.[newsIndex] : undefined
   return value != null && Number.isFinite(value) ? value : null
 }
 
