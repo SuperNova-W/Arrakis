@@ -25,7 +25,7 @@ for symbol in $symbols; do
     trap 'rm -f "$body"' EXIT
     status=$(curl --silent --show-error --max-time 30 \
         --output "$body" --write-out '%{http_code}' \
-        "${api_url}/api/v1/etfs/${symbol}/prediction?date=${signal_date}")
+        "${api_url}/api/v1/etfs/${symbol}/prediction?date=${signal_date}&model=market")
 
     if [ "$status" = "200" ]; then
         document=$(jq \

@@ -508,6 +508,10 @@ boost::json::value route(
     std::string_view target,
     unsigned& status) {
     const auto path = split_path(target);
+    // The prediction endpoint serves both the news-enhanced sector model and
+    // the market-only candidate.  The export job can request the latter
+    // explicitly so a loaded news registry does not shadow the market route.
+    const bool market_prediction_requested = query_value(target, "model") == "market";
     const bool database_healthy = database != nullptr && database->healthy();
     const auto* fallback_database = database_healthy ? database : nullptr;
     if (target == "/health") return {{"status", "ok"}};
@@ -537,7 +541,7 @@ boost::json::value route(
         return {{"database", database_healthy ? "ml-ready" : "unavailable"}, {"market_data_source", live_data ? "finnhub-websocket-via-kafka+database" : (database_healthy ? "database-fallback" : "finnhub-websocket-via-kafka")}, {"market_data_status", latest ? (age <= 120 ? "fresh" : "stale") : "waiting_for_stream"}, {"latest_bar_end", latest ? boost::json::value(iso_time(latest->bar_end)) : boost::json::value(nullptr)}, {"latest_bar_age_seconds", latest ? boost::json::value(age) : boost::json::value(nullptr)}, {"active_etfs", etfs.size()}, {"ml_available", (news_models != nullptr && news_models->size() > 0) || (market_models != nullptr && market_models->size() > 0)}, {"news_model_count", news_models == nullptr ? 0 : news_models->size()}, {"market_model_count", market_models == nullptr ? 0 : market_models->size()}};
     }
     if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" && path[4] == "prediction" &&
-        (news_models == nullptr || news_models->find(path[3]) == nullptr)) {
+        (market_prediction_requested || news_models == nullptr || news_models->find(path[3]) == nullptr)) {
         const auto symbol = path[3];
         if (!market.supports(symbol)) { status = 404; return error_json("UNKNOWN_ETF", "ETF is not in the configured universe."); }
         const auto date = query_value(target, "date");
@@ -575,7 +579,7 @@ boost::json::value route(
         const auto signal = probability > 0.55 ? "Bullish" : probability < 0.45 ? "Bearish" : "Neutral";
         return {{"symbol", symbol}, {"date", date}, {"publication_cutoff", iso_time(std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{cutoff}})}, {"coverage_status", "complete"}, {"feature_schema_hash", "market-features-v1"}, {"features", boost::json::object{}}, {"articles", boost::json::array{}}, {"prediction", {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", entry->model_id}}}, {"model_validated", true}, {"model_versions", {{"xgboost", entry->model_id}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
     }
-    if (path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" &&
+    if (!market_prediction_requested && path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" &&
         (path[4] == "news" || path[4] == "nlp-features" || path[4] == "insights" || path[4] == "prediction")) {
         const auto symbol = path[3];
         if (!market.supports(symbol)) { status = 404; return error_json("UNKNOWN_ETF", "ETF is not in the configured universe."); }
