@@ -70,7 +70,7 @@
     "embedding_7"
   ],
   "runtime_feature_schema_hash": "xlk-combined-features-v2",
-  "model_sha256": "a6657284fa75a66e2a6a4902b74478c0e65341de009dcd97deee6d6f4e880e40",
+  "model_sha256": "4e074b7c48c443918fe25601af2a0548d7a3fddf3adca1b18789cbc869dee5f5",
   "model_validated": false,
   "deployment_status": "experimental",
   "compatibility": {
@@ -83,5 +83,13 @@
     "reason": "The selected tree never splits on either changed feature; both are ignored by this artifact. Feature names and order are unchanged."
   },
   "finbert_model_sha256": "4a8d58ba2f8d74c7fca30fdb49fbbe367b64760104b64e8623e896a007229a6e",
-  "tokenizer_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+  "tokenizer_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+  "source_model_sha256": "a6657284fa75a66e2a6a4902b74478c0e65341de009dcd97deee6d6f4e880e40",
+  "serialization": {
+    "source_version": "3.3.0",
+    "deployed_version": "1.7.4",
+    "change": "Normalize the one-element base_score string to scalar and reserialize with XGBoost 1.7.4; preserve tree parameters.",
+    "verified_rows": 249,
+    "max_probability_difference": 3.40641e-7
+  }
 }

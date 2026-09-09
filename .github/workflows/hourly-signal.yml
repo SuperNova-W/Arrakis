@@ -275,6 +275,8 @@ jobs:
           [ -f models/finbert/model.onnx ] || curl -fsSL "$base/model.onnx" -o models/finbert/model.onnx
           [ -f models/finbert/vocab.txt  ] || curl -fsSL "$base/vocab.txt"  -o models/finbert/vocab.txt
           bash scripts/verify_news_model.sh
+          g++ -std=c++20 tests/news_model_runtime_test.cpp -lxgboost -o /tmp/arrakis-news-model-check
+          OMP_NUM_THREADS=1 /tmp/arrakis-news-model-check deploy/news_models/XLK.json deploy/news_models/XLK.json.test_features.csv
           # Integrity: verify against the digests pinned in manifest.json,
           # whether the files came from the cache or the release.
           expected_model=$(jq -r '.model_sha256'      models/finbert/manifest.json)

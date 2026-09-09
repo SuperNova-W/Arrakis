@@ -16,6 +16,12 @@ The training manifest retains `xlk-combined-features-v1`. The live schema is `xl
 
 The API checks the manifest target, symbol, runtime schema, complete feature order, threshold, finite input values and output probability. CI verifies the exact model checksum and FinBERT version pins before starting inference. No validation flag is manufactured to open the display path.
 
+## Native runtime compatibility
+
+The source artifact was serialized by XGBoost 3.3.0; Debian bookworm deploys 1.7.4. The original is retained as `XLK.json.source.json`. Its scalar binary-classifier base score was stored as a one-element vector string. Only that string was normalized to its scalar form, preserving all JSON numeric types, then the model was loaded and saved by native XGBoost 1.7.4. No tree was trained or changed. Both checksums and conversion provenance are in the manifest.
+
+All 249 held-out rows were replayed through native 1.7.4. The largest difference from the six-decimal recorded predictions was 0.000000340641. The test feature fixture is taken directly from the manifest-pinned dataset, in manifest feature order; its first column is the saved expected probability. The same C++ regression runs in CI and, before enrichment, against the actual deployed runtime.
+
 ## Verification
 
 - Frontend lint and production build pass.

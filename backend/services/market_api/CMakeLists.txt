@@ -9,6 +9,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 if(BUILD_TESTING)
+    add_executable(arrakis_news_model_runtime_test ../../tests/news_model_runtime_test.cpp)
+    target_compile_features(arrakis_news_model_runtime_test PRIVATE cxx_std_20)
+    target_link_libraries(arrakis_news_model_runtime_test PRIVATE xgboost::xgboost)
+    add_test(NAME arrakis_news_model_runtime_test COMMAND arrakis_news_model_runtime_test
+        ${PROJECT_SOURCE_DIR}/deploy/news_models/XLK.json
+        ${PROJECT_SOURCE_DIR}/deploy/news_models/XLK.json.test_features.csv)
+    set_tests_properties(arrakis_news_model_runtime_test PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=1")
     add_executable(market-api-live-market-tests tests/live_market_test.cpp src/live_market.cpp)
     target_compile_features(market-api-live-market-tests PRIVATE cxx_std_20)
     target_include_directories(market-api-live-market-tests PRIVATE include)
