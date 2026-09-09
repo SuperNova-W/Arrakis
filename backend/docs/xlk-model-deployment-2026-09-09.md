@@ -29,3 +29,9 @@ All 249 held-out rows were replayed through native 1.7.4. The largest difference
 - Isolated PostgreSQL integration loads a held-out feature row, serves the selected model through the actual C++ API, and exports its prediction. Probability agrees with the saved held-out result within 0.000001; experimental status and false validation metadata survive export.
 - Default disabled inference remains gated; missing features, database errors and malformed predictions remain operational failures.
 - Live workflow and browser verification are recorded after publication below.
+
+## Live verification
+
+GitHub Actions run [34305678945](https://github.com/SuperNova-W/Arrakis/actions/runs/34305678945) completed ingestion, FinBERT enrichment, inference, publication and heartbeat successfully from commit `c36f35a`. The deployment runtime reproduced all 249 held-out probabilities before enrichment. The public XLK document for 2026-09-08 returns HTTP 200 with the selected model ID, probability 0.5927388072013855, direction Bullish, 20 citations, experimental status and false validation metadata. Computer-use inspection of the deployed Recommendations page confirmed the displayed 59.3% estimate, Bullish label and absence of warning banners. CI run [34305679776](https://github.com/SuperNova-W/Arrakis/actions/runs/34305679776) passed both frontend and C++ jobs.
+
+Mobile computer-use verification at 390 × 844 confirmed a 390-pixel page width (no horizontal overflow), a readable forecast, zero warning panels and no internal model/schema/gate terminology in visible text. The browser viewport was restored afterward.

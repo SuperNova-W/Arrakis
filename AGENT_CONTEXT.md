@@ -262,3 +262,9 @@ requests must preserve `/api/v1`; the previous website paths caused every news r
 Scheduled ingestion/enrichment and exporters must propagate operational failures. Preserve the
 model validation gate and distinguish forecast availability from delivery health. User-facing UI
 must use plain language and avoid environment variables, schema names, model IDs and error codes.
+
+## 2026-09-09 personal-project forecasts enabled
+
+The user explicitly authorized deploying the best available model and requested no warning banners on the website. XLK now uses `backend/deploy/news_models/XLK.json` (the existing rebuilt-v2 HPO FinBERT sentiment + XGBoost candidate), enabled with `ARRAKIS_XLK_NEWS_MODEL_ENABLED=true`. Keep `model_validated=false`: forecast availability is now independent of research promotion. The frontend accepts the explicit experimental status but shows only plain-language direction, estimated probability, dates and news. Do not reintroduce warning/disclaimer banners against this preference.
+
+Deployment run 34305678945 and CI run 34305679776 passed. Live XLK for 2026-09-08 shows Bullish / 59.3%, with 20 citations. All 249 held-out predictions were reproduced on native XGBoost 1.7.4 after format conversion from 3.3.0; regression checks now run against the deployment runtime. See `backend/docs/xlk-model-deployment-2026-09-09.md` for selection evidence, input compatibility, limitations and exact provenance. Other ETFs remain without forecasts; this deployment covers the canonical XLK news path.
