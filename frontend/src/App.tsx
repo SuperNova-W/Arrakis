@@ -7,7 +7,9 @@ import {
   Database,
   Download,
   BookOpen,
-  LayoutDashboard,
+  ArrowUpRight,
+  ArrowRight,
+  ShieldCheck,
   RefreshCw,
   WifiOff,
 } from 'lucide-react'
@@ -81,13 +83,17 @@ function marketStatus() {
 function Shell({ children }: { children: React.ReactNode }) {
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to content</a>
-    <header>
-      <Link to="/" className="brand"><span className="brand-mark">A</span><span>Arrakis</span></Link>
+    <header className="site-header">
+      <Link to="/" className="brand"><span className="brand-mark"><ArrowUpRight size={25} strokeWidth={3}/></span><span>ARRAKIS</span></Link>
       <nav className="top-nav" aria-label="Primary navigation">
-        <NavLink to="/"><LayoutDashboard size={16}/><span>ETF dashboard</span></NavLink>
+        <NavLink to="/">OVERVIEW</NavLink>
+        <a href="/#sectors">SECTORS</a>
+        <a href="/#context">MARKET CONTEXT</a>
       </nav>
+      <Link to="/etfs/XLK" className="header-cta">EXPLORE XLK <ArrowUpRight size={16}/></Link>
     </header>
     <main id="main-content" tabIndex={-1}>{children}</main>
+    <footer className="site-footer"><Link to="/" className="brand">ARRAKIS<span className="footer-dot"/></Link><p>Independent research. Informed perspective.</p><div><ShieldCheck size={17}/><span>Research only. Not investment advice. No trades are executed.</span></div></footer>
   </div>
 }
 
@@ -108,16 +114,11 @@ function FinnhubErrorState({ error, retry, compact = false, provider = 'Finnhub'
 }
 
 function MiniPriceChart({ symbol, quote }: { symbol: string; quote: Quote | null }) {
-  const values = quote ? [quote.open, quote.low, quote.current, quote.high] : []
-  if (!values.length) return <div className="mini-chart mini-chart-empty" role="img" aria-label={`No ${symbol} price chart available`}><span>Chart unavailable</span></div>
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const spread = max - min || Math.max(max * 0.01, 1)
-  const polyline = values.map((value, index) => `${(index / Math.max(values.length - 1, 1)) * 100},${92 - ((value - min) / spread) * 76}`).join(' ')
-  const rising = values.at(-1)! >= values[0]!
-  return <div className="mini-chart" role="img" aria-label={`${symbol} today's price range chart, ${rising ? 'up' : 'down'} from the opening price`}>
-    <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points={polyline} fill="none" stroke={rising ? '#16845f' : '#c84d4d'} strokeWidth="3" vectorEffect="non-scaling-stroke"/></svg>
-    <div className={`mini-chart-label ${rising ? 'up' : 'down'}`}><span>Today</span><span>{rising ? 'Up' : 'Down'}</span></div>
+  if (!quote) return <div className="mini-chart mini-chart-empty">Day range unavailable</div>
+  const position = quote.high === quote.low ? 50 : Math.max(0, Math.min(100, (quote.current - quote.low) / (quote.high - quote.low) * 100))
+  return <div className="mini-chart" role="img" aria-label={symbol + ' current price ' + formatPrice(quote.current) + ' within today’s range of ' + formatPrice(quote.low) + ' to ' + formatPrice(quote.high)}>
+    <div className="day-range-track"><i style={{ left: position + '%' }}/></div>
+    <div className="mini-chart-label"><span>Day low</span><span>Current price in range</span><span>Day high</span></div>
   </div>
 }
 
@@ -138,12 +139,12 @@ function TileRecommendation({ symbol }: { symbol: string }) {
 function QuoteCard({ etf, apiKey }: { etf: EtfDefinition; apiKey: string }) {
   const quote = useFinnhubQuote(etf.symbol, apiKey)
   return <Link to={`/etfs/${etf.symbol}`} className="etf-card">
-    <div className="etf-card-top"><div><b className="ticker">{etf.symbol}</b><span>{etf.name}</span></div><span className={`category-tag ${etf.category}`}>{etf.category === 'sector' ? 'Sector' : 'Broader market'}</span></div>
+    <div className="etf-card-top"><div><b className="ticker">{etf.symbol}</b><span>{etf.name}</span></div><span className="fund-arrow"><ArrowUpRight size={21}/></span></div>
     {quote.loading && !quote.data ? <div className="quote-skeleton"/> : quote.error && !quote.data ? <div className="quote-error"><span>Price unavailable</span><small>Open for details</small></div> : <div className="etf-price"><strong>{formatPrice(quote.data?.current)}</strong><span className={(quote.data?.changePercent ?? 0) >= 0 ? 'positive' : 'negative'}>{formatPercent(quote.data?.changePercent)}</span></div>}
     <div className="quote-range"><span>Day range</span><b>{formatPrice(quote.data?.low)} – {formatPrice(quote.data?.high)}</b></div>
     <MiniPriceChart symbol={etf.symbol} quote={quote.data}/>
     <TileRecommendation symbol={etf.symbol}/>
-    <div className="etf-card-foot"><span>{quote.cached ? 'Last available price' : 'Updated'} · {formatTimestamp(quote.data?.timestamp)}</span><ChevronRight size={15}/></div>
+    <div className="etf-card-foot"><span>{quote.cached ? 'Last available' : 'As of'} · {formatTimestamp(quote.data?.timestamp)}</span><ChevronRight size={15}/></div>
   </Link>
 }
 
@@ -151,15 +152,19 @@ function Dashboard({ apiKey }: { apiKey: string }) {
   const sectors = ETF_UNIVERSE.filter(etf => etf.category === 'sector')
   const contexts = ETF_UNIVERSE.filter(etf => etf.category === 'context')
   return <>
-    <Topbar eyebrow={`MARKET OVERVIEW · ${marketStatus().toUpperCase()}`} title="ETF research dashboard"/>
-    <div className="notice-banner live-source"><Activity size={17}/><div><b>Explore exchange-traded funds (ETFs)</b><span>Compare sectors and market trends. Each tile includes today’s price chart and its latest recommendation. Prices supplied by Finnhub.</span></div></div>
-    <EtfSection title="Sector ETFs" items={sectors} apiKey={apiKey}/>
-    <EtfSection title="Market context" items={contexts} apiKey={apiKey}/>
+    <section className="market-intro" aria-labelledby="overview-title">
+      <div className="intro-meta"><span className="eyebrow">ETF RESEARCH / MARKET OVERVIEW</span><span className="session-status"><span/>{marketStatus()} · regular US hours</span></div>
+      <div className="intro-main"><h1 id="overview-title">THE MARKET.<br/><span>IN PERSPECTIVE.</span></h1><div className="intro-copy"><p>A clearer view of every sector.</p><span>Explore prices, compare market context, and follow the latest research outlook.</span><a href="#sectors" className="primary-btn">EXPLORE THE SECTORS <ArrowRight size={17}/></a></div></div>
+      <div className="overview-index"><div><b>01 /</b><span>Sector coverage</span><strong>{sectors.length} ETFs</strong></div><div><b>02 /</b><span>Market context</span><strong>{contexts.length} ETFs</strong></div><div><b>03 /</b><span>Research focus</span><strong>Next-close direction</strong></div></div>
+    </section>
+    <EtfSection id="sectors" number="01" title="Sector by sector." description="Explore the industries moving the market." items={sectors} apiKey={apiKey}/>
+    <EtfSection id="context" number="02" title="The wider picture." description="Equities, bonds, and commodities in context." items={contexts} apiKey={apiKey}/>
+    <div className="data-note"><Activity size={16}/><span>Quotes supplied by Finnhub. Each fund shows its latest available research; unavailable forecasts are never estimated.</span></div>
   </>
 }
 
-function EtfSection({ title, items, apiKey }: { title: string; items: EtfDefinition[]; apiKey: string }) {
-  return <section className="etf-group"><div className="section-heading"><div><div className="eyebrow">{title.toUpperCase()}</div><h2>{items.length} funds</h2></div></div><div className="etf-grid">{items.map(etf => <QuoteCard key={etf.symbol} etf={etf} apiKey={apiKey}/>)}</div></section>
+function EtfSection({ id, number, title, description, items, apiKey }: { id: string; number: string; title: string; description: string; items: EtfDefinition[]; apiKey: string }) {
+  return <section id={id} className="etf-group"><div className="section-heading"><div><span className="section-number">{number} /</span><h2>{title}</h2><p>{description}</p></div><span className="fund-count">{items.length} FUNDS <ArrowUpRight size={16}/></span></div><div className="etf-grid">{items.map(etf => <QuoteCard key={etf.symbol} etf={etf} apiKey={apiKey}/>)}</div></section>
 }
 
 function csvDownload(symbol: string, candles: Candle[]) {

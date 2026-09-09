@@ -55,23 +55,23 @@ export default function FinnhubChart({
       height: 570,
       layout: {
         background: { type: ColorType.Solid, color: '#ffffff' },
-        textColor: '#6a7d89',
-        fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-        fontSize: 11,
-        panes: { separatorColor: '#e1e8ec', separatorHoverColor: '#c6d4da', enableResize: true },
+        textColor: '#5c685f',
+        fontFamily: 'Arial, Helvetica, sans-serif',
+        fontSize: 12,
+        panes: { separatorColor: '#dce2dc', separatorHoverColor: '#bacbb5', enableResize: true },
       },
       grid: {
-        vertLines: { color: '#eef2f4', style: LineStyle.Dotted },
-        horzLines: { color: '#dfe7eb', style: LineStyle.Dashed },
+        vertLines: { color: '#f0f3ed', style: LineStyle.Dotted },
+        horzLines: { color: '#e0e7db', style: LineStyle.Dashed },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: '#78929d', style: LineStyle.Dashed, labelBackgroundColor: '#315d6d' },
-        horzLine: { color: '#78929d', style: LineStyle.Dashed, labelBackgroundColor: '#315d6d' },
+        vertLine: { color: '#78929d', style: LineStyle.Dashed, labelBackgroundColor: '#102c21' },
+        horzLine: { color: '#78929d', style: LineStyle.Dashed, labelBackgroundColor: '#102c21' },
       },
-      rightPriceScale: { borderColor: '#dce5e9', scaleMargins: { top: .08, bottom: .24 } },
+      rightPriceScale: { borderColor: '#dce2dc', scaleMargins: { top: .08, bottom: .24 } },
       timeScale: {
-        borderColor: '#dce5e9',
+        borderColor: '#dce2dc',
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 2,
@@ -86,9 +86,9 @@ export default function FinnhubChart({
     let priceSeries: ISeriesApi<'Area'> | ISeriesApi<'Candlestick'>
     if (style === 'candles') {
       priceSeries = chart.addSeries(CandlestickSeries, {
-        upColor: '#25826b',
+        upColor: '#386d40',
         downColor: '#d45d5d',
-        wickUpColor: '#25826b',
+        wickUpColor: '#386d40',
         wickDownColor: '#d45d5d',
         borderVisible: false,
         priceLineVisible: true,
@@ -103,9 +103,9 @@ export default function FinnhubChart({
       })))
     } else {
       priceSeries = chart.addSeries(AreaSeries, {
-        lineColor: '#277d69',
-        topColor: 'rgba(39, 125, 105, .28)',
-        bottomColor: 'rgba(39, 125, 105, .03)',
+        lineColor: '#386d40',
+        topColor: 'rgba(56, 109, 64, .28)',
+        bottomColor: 'rgba(56, 109, 64, .03)',
         lineWidth: 2,
         priceLineVisible: true,
         lastValueVisible: true,
