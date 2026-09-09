@@ -50,3 +50,9 @@ covered the deployed recommendations, exact-date empty state, fund chart and pri
 The first repaired run (34303213766) fetched 814 distinct articles with zero failed requests across
 55 provider calls and completed FinBERT enrichment. It exposed the citation query error above; its
 heartbeat also raced a frontend deployment. A subsequent run verifies those follow-up fixes.
+
+Live verification completed with [run 34303804571](https://github.com/SuperNova-W/Arrakis/actions/runs/34303804571):
+both publishing and heartbeat jobs succeeded. All 55 provider requests succeeded, 814 distinct
+articles were ingested, FinBERT enrichment completed, and the published XLK document contained 20
+citations. The deployed browser displayed those real headlines, timestamps and source links.
+Forecasts remain withheld by the existing validation gate. CI runs 34303804848 and 34303970231 passed.

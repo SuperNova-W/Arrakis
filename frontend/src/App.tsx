@@ -285,6 +285,7 @@ function Metric({ label, value, tone = '' }: { label: string; value: string; ton
 
 function Recommendation() {
   const [symbol, setSymbol] = useState('XLK')
+  const [showAllArticles, setShowAllArticles] = useState(false)
   const [date, setDate] = useState(currentMarketDate())
   const [latest, setLatest] = useState(true)
   const ml = useMlRecommendation(date, symbol, latest)
@@ -324,12 +325,13 @@ function Recommendation() {
         </div>
         <div className="panel news-panel">
           <div className="panel-head"><div><div className="eyebrow">IN THE NEWS</div><h2>Related articles</h2></div><span>{document?.articles.length ?? 0} articles</span></div>
-          {document?.articles.length ? <div className="news-list">{document.articles.slice(0, 8).map(article => <article className="news-item" key={article.article_id}>
+          {document?.articles.length ? <div className="news-list">{document.articles.slice(0, showAllArticles ? undefined : 8).map(article => <article className="news-item" key={article.article_id}>
             <div>{article.url && /^https?:\/\//i.test(article.url) ? <a href={article.url} target="_blank" rel="noopener noreferrer"><b>{article.headline}</b><span className="sr-only"> (opens in a new tab)</span></a> : <b>{article.headline}</b>}
               <small>{article.source} · <time dateTime={article.published_at}>{new Date(article.published_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</time></small>
             </div>
             <span className={article.sentiment_score > 0.1 ? 'positive' : article.sentiment_score < -0.1 ? 'negative' : ''}>{article.sentiment_score > 0.1 ? 'Positive tone' : article.sentiment_score < -0.1 ? 'Negative tone' : 'Mixed tone'}</span>
           </article>)}</div> : <div className="empty-state"><BookOpen size={22}/><div><h2>{symbol === 'XLK' ? 'No articles available' : 'News coverage is coming soon'}</h2><p>{symbol === 'XLK' ? 'No news articles are available in this update. Check back later for more coverage.' : 'Related news is currently available for the technology fund (XLK). Other funds will be added as coverage expands.'}</p></div></div>}
+          {(document?.articles.length ?? 0) > 8 && <button className="outline-btn" aria-expanded={showAllArticles} onClick={() => setShowAllArticles(value => !value)}>{showAllArticles ? 'Show fewer articles' : `Show all ${document?.articles.length} articles`}</button>}
           {!!document?.articles.length && <p className="news-explanation">Article tone describes the language in the news; it does not predict price movement.</p>}
         </div>
         <div className="panel research-only-note"><ShieldCheck size={20}/><div><b>Use research as a starting point</b><p>Consider other sources and your own circumstances before making investment decisions. {DISCLAIMER}</p></div></div>
