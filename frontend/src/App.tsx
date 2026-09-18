@@ -8,7 +8,6 @@ import {
   Download,
   BookOpen,
   ArrowUpRight,
-  ArrowRight,
   ShieldCheck,
   RefreshCw,
   WifiOff,
@@ -91,7 +90,6 @@ function Shell({ children }: { children: React.ReactNode }) {
         <a href="/#sectors">SECTORS</a>
         <a href="/#context">MARKET CONTEXT</a>
       </nav>
-      <Link to="/etfs/XLK" className="header-cta">EXPLORE XLK <ArrowUpRight size={16}/></Link>
     </header>
     <main id="main-content" tabIndex={-1}>{children}</main>
     <footer className="site-footer"><Link to="/" className="brand">ARRAKIS<span className="footer-dot"/></Link><p>Independent research. Informed perspective.</p><div><ShieldCheck size={17}/><span>Research only. Not investment advice. No trades are executed.</span></div></footer>
@@ -155,8 +153,7 @@ function Dashboard({ apiKey }: { apiKey: string }) {
   return <>
     <section className="market-intro" aria-labelledby="overview-title">
       <div className="intro-meta"><span className="eyebrow">ETF RESEARCH / MARKET OVERVIEW</span><span className="session-status"><span/>{marketStatus()} · regular US hours</span></div>
-      <div className="intro-main"><h1 id="overview-title">THE MARKET.<br/><span>IN PERSPECTIVE.</span></h1><div className="intro-copy"><p>A clearer view of every sector.</p><span>Explore prices, compare market context, and follow the latest research outlook.</span><a href="#sectors" className="primary-btn">EXPLORE THE SECTORS <ArrowRight size={17}/></a></div></div>
-      <div className="overview-index"><div><b>01 /</b><span>Sector coverage</span><strong>{sectors.length} ETFs</strong></div><div><b>02 /</b><span>Market context</span><strong>{contexts.length} ETFs</strong></div><div><b>03 /</b><span>Research focus</span><strong>Next-close direction</strong></div></div>
+      <div className="intro-main"><h1 id="overview-title">THE MARKET.<br/><span>IN PERSPECTIVE.</span></h1></div>
     </section>
     <EtfSection id="sectors" number="01" title="Sector by sector." description="Explore the industries moving the market." items={sectors} apiKey={apiKey}/>
     <EtfSection id="context" number="02" title="The wider picture." description="Equities, bonds, and commodities in context." items={contexts} apiKey={apiKey}/>
