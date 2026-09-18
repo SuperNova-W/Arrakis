@@ -28,8 +28,9 @@ on:
     # Hourly at :10 past, 13:00-21:00 UTC Mon-Fri. That spans the regular session
     # in both DST regimes (09:30-16:00 ET is 13:30-20:00 UTC in EDT, 14:30-21:00
     # UTC in EST) and includes one post-close run in each. The job itself decides
-    # whether the market is open and which run is the signal of record; a run
-    # outside the session exits cleanly.
+    # which run is the signal of record: without an intraday bar stream only a
+    # cutoff at or after the 16:00 ET close has market features, so an intraday
+    # run exits cleanly and the post-close runs publish.
     #
     # GitHub does not guarantee punctuality: scheduled workflows are commonly
     # delayed 5-30 minutes and can be dropped entirely under load. This pipeline
@@ -108,6 +109,11 @@ jobs:
       ARRAKIS_NEWS_MODEL_ENABLED: 'true'
       ARRAKIS_NEWS_MODEL_DIR: ${{ github.workspace }}/backend/deploy/news_models
       ARRAKIS_MARKET_MODEL_DIR: ${{ github.workspace }}/backend/deploy/market_models
+      # The same bargain, for the market-only baselines behind the context
+      # ETFs: publish the candidate's forecast instead of an empty
+      # NO_VALIDATED_MODEL document. The promotion gate itself is unchanged --
+      # every document still reports model_validated false / experimental.
+      ARRAKIS_MARKET_MODEL_ENABLED: 'true'
       ARRAKIS_DAILY_BAR_SYMBOLS: 'XLC,XLY,XLP,XLE,XLF,XLV,XLI,XLB,XLRE,XLK,XLU,SPY,QQQ,IWM,TLT,HYG,GLD,USO'
       ARRAKIS_FINBERT_VERSION: finbert-v1
       ARRAKIS_FINBERT_TOKENIZER_VERSION: finbert-tokenizer-v1
@@ -152,12 +158,29 @@ jobs:
           # The post-close run is the signal of record: its news window matches
           # the full trading day the model was trained on. Intraday runs are
           # point-in-time correct but out-of-distribution.
+          session_close_epoch=$(TZ=America/New_York date -d "$signal_date 16:00:00" +%s)
           if [ "${{ inputs.force_post_close }}" = "true" ] || [ "$now_et_hm" -ge 1600 ]; then
             run_kind=post_close
-            cutoff_epoch=$(TZ=America/New_York date -d "$signal_date 16:00:00" +%s)
+            cutoff_epoch=$session_close_epoch
           else
             run_kind=intraday
             cutoff_epoch=$(date +%s)
+          fi
+
+          # Market features come from completed end-of-day bars only.
+          # daily_bar_visible_at() admits the bar for $signal_date solely once
+          # its 16:00 ET close is at or before the cutoff, and the still-open
+          # session is reconstructible only from the intraday 5m stream this
+          # deployment deliberately does not run. So a cutoff before the close
+          # has no market feature vector for the target date at all and
+          # news-enricher aborts with "Persisted market history is
+          # insufficient". The upstream daily endpoint began returning a
+          # partial in-progress candle for the current session, which is why
+          # this used to stop at the bar guard below and now reaches the
+          # enricher. Exit cleanly here instead, before the build.
+          if [ "$cutoff_epoch" -lt "$session_close_epoch" ]; then
+            echo "::notice::$signal_date has not closed yet; only the post-close run is the signal of record."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           # Inclusive lower bound: midnight ET on the trading date. This matches
@@ -322,18 +345,26 @@ jobs:
         # safe and keeps the current session's bar fresh.
         run: ./build/ci/daily-bar-loader data/history
 
-      - name: Verify the trading date has a market bar
+      - name: Verify every published symbol has a market bar
         id: guard
         if: steps.window.outputs.skip != 'true'
         working-directory: backend
-        # US market holidays have no bar, and market_feature_vector throws when
-        # the requested date is absent. Detect it and exit cleanly.
+        # US market holidays have no bar, and market_feature_vector returns
+        # nullopt when the requested date is absent -- for ANY symbol the run
+        # publishes, not just XLK. The upstream daily history also lags for
+        # individual symbols occasionally (XLE stopped at 2026-09-15 on the
+        # 2026-09-16 run, which failed the whole job at the enricher). Check
+        # the full universe and exit cleanly on either.
         run: |
           set -euo pipefail
-          count=$(psql "$SUPABASE_DB_URL" -tAc \
-            "SELECT count(*) FROM etf_bars_daily WHERE symbol='XLK' AND trading_date='${{ steps.window.outputs.date }}'")
-          if [ "$count" = "0" ]; then
-            echo "::notice::No XLK bar for ${{ steps.window.outputs.date }} (market holiday or stale history). Skipping."
+          missing=$(psql "$SUPABASE_DB_URL" -tAc \
+            "SELECT string_agg(wanted.symbol, ' ' ORDER BY wanted.symbol)
+               FROM unnest(string_to_array('$ARRAKIS_DAILY_BAR_SYMBOLS', ',')) AS wanted(symbol)
+              WHERE NOT EXISTS (SELECT 1 FROM etf_bars_daily bar
+                                 WHERE bar.symbol = wanted.symbol
+                                   AND bar.trading_date = '${{ steps.window.outputs.date }}')")
+          if [ -n "$missing" ]; then
+            echo "::notice::No ${{ steps.window.outputs.date }} bar for: $missing (market holiday or lagging history). Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
