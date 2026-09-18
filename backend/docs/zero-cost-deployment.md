@@ -72,18 +72,24 @@ and 14:30-21:00 UTC under EST). Each run decides for itself:
 | Condition (America/New_York) | Behaviour |
 | --- | --- |
 | Weekend | Exit cleanly, publish nothing |
-| Before 09:30 | Exit cleanly, publish nothing |
-| 09:30-15:59 | `run_kind = intraday`, cutoff = **now** |
+| Cutoff before the date's 16:00 close | Exit cleanly, publish nothing |
 | 16:00 or later | `run_kind = post_close`, cutoff = **16:00 ET** |
-| No `etf_bars_daily` row for the date | Exit cleanly (market holiday or stale history) |
+| A universe symbol has no `etf_bars_daily` row for the date | Exit cleanly (market holiday or lagging history) |
 
-**Only the post-close run is the signal of record.** Every training observation
-saw a full trading day of news up to the 16:00 ET close. An intraday run is
-point-in-time correct — the enricher never admits an article published after its
-cutoff — but it sees only part of the day, so `article_count`,
-`abnormal_news_volume`, `news_coverage` and `news_freshness_hours` sit outside
-the distribution the model was fitted on. The UI labels intraday documents as
-provisional, and `research_signals.run_kind` records which is which.
+**Only the post-close run is the signal of record**, and in this deployment it
+is the only run that publishes at all. Every training observation saw a full
+trading day of news up to the 16:00 ET close, so an intraday document would be
+out of distribution to begin with. More decisively, it is not constructible
+here: `daily_bar_visible_at()` admits the end-of-day bar for a date only once
+that session's close is at or before the cutoff, and the still-open session can
+only be reconstructed from `etf_bars_5m`, which stays empty because there is no
+live market WebSocket (§ *What this gives up*). An intraday cutoff therefore
+has no market feature vector for the target date, and `news-enricher` aborts
+with *Persisted market history is insufficient*. The window step detects that
+case up front and exits before the build.
+
+A `workflow_dispatch` backfill of an earlier `trading_date` still runs: its
+cutoff is *now*, which is after that date's close.
 
 Under EDT the 20:10 and 21:10 UTC runs are both post-close. They share the same
 16:00 ET cutoff, so their feature vectors are identical; the view simply shows
@@ -190,12 +196,24 @@ AUC > 0.55 in every walk-forward window) — see
 `AGENTS.md` forbids claiming predictive edge without reproducible out-of-sample
 evidence.
 
-So `/insights` returns **503 `NO_VALIDATED_MODEL`**, the published document
-carries a `prediction_error` instead of a `prediction`, and the page renders its
-"No validated model" panel. The pipeline still runs end to end and still
-publishes the news, sentiment and feature payload — the honest deliverable today.
+Publication is therefore split from promotion. `ARRAKIS_NEWS_MODEL_ENABLED`
+(sector documents) and `ARRAKIS_MARKET_MODEL_ENABLED` (the market-only
+baselines behind the context ETFs) each let an un-promoted candidate's forecast
+be published, while the provenance stays truthful: the document reports
+`model_validated: false` and `prediction_status: "experimental"`, and the page
+labels it *Research model* rather than *Validated*. Both default to off, so a
+deployment that sets neither still gets **503 `NO_VALIDATED_MODEL`** and a
+document carrying a `prediction_error` instead of a `prediction`.
 
-When a target clears the bar, flip the gate in the workflow. Not before.
+Until 2026-09-18 only the news flag existed. The market path refused an
+un-promoted candidate outright, so every context ETF — SPY, QQQ, IWM, TLT, HYG,
+GLD, USO — published `NO_VALIDATED_MODEL` and showed no recommendation, even
+though its sector counterparts published experimental forecasts from artifacts
+gated exactly the same way.
+
+Clearing the bar is a separate step: it means updating the manifest's
+`promotion_eligible` after reproducible walk-forward validation, which is what
+flips these documents to `model_validated: true`. Not before.
 
 ---
 

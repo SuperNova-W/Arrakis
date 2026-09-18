@@ -11,8 +11,13 @@ testing in 2023.
 
 Every manifest is marked `promotion_eligible: false` because these candidates
 did not clear the independent walk-forward promotion bar. The deployment
-runtime loads and verifies every candidate, but publishes `NO_VALIDATED_MODEL`
-until the corresponding manifest is updated after reproducible validation.
+runtime loads and verifies every candidate and, unless
+`ARRAKIS_MARKET_MODEL_ENABLED=true`, publishes `NO_VALIDATED_MODEL` for it.
+
+With that flag set the candidate's forecast is published, but the gate is still
+reported rather than bypassed: the document carries `model_validated: false`
+and `prediction_status: "experimental"`. Only updating a manifest's
+`promotion_eligible` after reproducible validation makes a document validated.
 
 These are market-only baseline candidates. They do not replace the approved
 FinBERT plus XGBoost news model path for XLK.

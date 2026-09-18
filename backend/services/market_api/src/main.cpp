@@ -503,6 +503,7 @@ boost::json::value route(
     const NewsModelRegistry* news_models,
     const MarketModelRegistry* market_models,
     bool model_validation_required,
+    bool market_model_enabled,
     const arrakis::news::FinbertSession* finbert,
     const RuntimeState& runtime,
     std::string_view target,
@@ -556,7 +557,12 @@ boost::json::value route(
             );
         }
         const auto* entry = market_models->find(symbol);
-        if (!entry->promotion_eligible) {
+        // A candidate that has not cleared the chronological promotion gate is
+        // still publishable when it is explicitly enabled -- the same bargain
+        // ARRAKIS_NEWS_MODEL_ENABLED strikes for the sector documents below.
+        // The provenance stays truthful either way: model_validated and
+        // prediction_status report the gate, not the enable flag.
+        if (!entry->promotion_eligible && !market_model_enabled) {
             status = 503;
             return error_json("NO_VALIDATED_MODEL", "A " + symbol + " model candidate is deployed, but it has not cleared the chronological promotion gate.");
         }
@@ -577,7 +583,7 @@ boost::json::value route(
         for (const auto value : *market_values) features.push_back(static_cast<float>(value));
         const auto probability = entry->model->predict(features);
         const auto signal = probability > 0.55 ? "Bullish" : probability < 0.45 ? "Bearish" : "Neutral";
-        return {{"symbol", symbol}, {"date", date}, {"publication_cutoff", iso_time(std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{cutoff}})}, {"coverage_status", "complete"}, {"feature_schema_hash", "market-features-v1"}, {"features", boost::json::object{}}, {"articles", boost::json::array{}}, {"prediction", {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", entry->model_id}}}, {"model_validated", true}, {"model_versions", {{"xgboost", entry->model_id}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
+        return {{"symbol", symbol}, {"date", date}, {"publication_cutoff", iso_time(std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{cutoff}})}, {"coverage_status", "complete"}, {"feature_schema_hash", "market-features-v1"}, {"features", boost::json::object{}}, {"articles", boost::json::array{}}, {"prediction", {{"direction", signal}, {"probability_positive_return", probability}, {"threshold", 0.5}, {"model_id", entry->model_id}}}, {"model_validated", entry->promotion_eligible}, {"prediction_status", entry->promotion_eligible ? "validated" : "experimental"}, {"model_versions", {{"xgboost", entry->model_id}}}, {"research_only_disclaimer", "Research signals only. Not investment advice. No trades are executed by this platform."}};
     }
     if (!market_prediction_requested && path.size() >= 5 && path[0] == "api" && path[1] == "v1" && path[2] == "etfs" &&
         (path[4] == "news" || path[4] == "nlp-features" || path[4] == "insights" || path[4] == "prediction")) {
@@ -685,6 +691,7 @@ http::response<http::string_body> handle(
     const NewsModelRegistry* news_models,
     const MarketModelRegistry* market_models,
     bool model_validation_required,
+    bool market_model_enabled,
     const arrakis::news::FinbertSession* finbert,
     RuntimeState& runtime,
     const http::request<http::string_body>& request) {
@@ -727,7 +734,7 @@ http::response<http::string_body> handle(
     }
     unsigned status = 200;
     boost::json::value body;
-    try { body = route(database, market, news_models, market_models, model_validation_required, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
+    try { body = route(database, market, news_models, market_models, model_validation_required, market_model_enabled, finbert, runtime, std::string_view(request.target().data(), request.target().size()), status); }
     catch (const std::invalid_argument& error) { status = 400; body = error_json("INVALID_REQUEST", error.what()); }
     catch (const std::exception& error) { status = 500; body = error_json("INTERNAL_ERROR", error.what()); }
     http::response<http::string_body> response{static_cast<http::status>(status), request.version()};
@@ -850,6 +857,9 @@ int main() {
         });
         const bool model_validation_required = !env_true("ARRAKIS_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_NEWS_MODEL_ENABLED") &&
                                                !env_true("ARRAKIS_XLK_NEWS_MODEL_VALIDATED") && !env_true("ARRAKIS_XLK_NEWS_MODEL_ENABLED");
+        // Opt-in, and separate from the news flag: the market-only baselines
+        // are their own model family with their own promotion gate.
+        const bool market_model_enabled = env_true("ARRAKIS_MARKET_MODEL_ENABLED");
         std::filesystem::path news_model_dir = env("ARRAKIS_NEWS_MODEL_DIR", "deploy/news_models");
         // Keep the original single-XLK environment usable for local regression
         // fixtures while the default path discovers every configured sector.
@@ -909,7 +919,7 @@ int main() {
             }
             auto response = request.method() == http::verb::options
                 ? http::response<http::string_body>{http::status::no_content, request.version()}
-                : handle(database.get(), market, news_models.get(), market_models.get(), model_validation_required, finbert.get(), runtime, request);
+                : handle(database.get(), market, news_models.get(), market_models.get(), model_validation_required, market_model_enabled, finbert.get(), runtime, request);
             if (request.method() == http::verb::options) runtime.api_requests.fetch_add(1);
             response.set(http::field::access_control_allow_origin, env("CORS_ALLOWED_ORIGINS", "http://localhost:3000"));
             response.set(http::field::access_control_allow_methods, "GET,OPTIONS");
