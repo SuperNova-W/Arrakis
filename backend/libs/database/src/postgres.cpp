@@ -325,18 +325,28 @@ std::size_t PostgresPool::upsert_daily_bars(const std::vector<DailyBarRecord>& b
     return bars.size();
 }
 
-void PostgresPool::persist_news_article(const NewsArticle& article, std::string_view normalized_content_hash,
-                                        std::string_view provenance_json) {
+std::string PostgresPool::persist_news_article(const NewsArticle& article, std::string_view normalized_content_hash,
+                                               std::string_view provenance_json) {
     const auto lease = impl_->acquire();
     const std::string published = std::to_string(article.published_at.time_since_epoch().count());
     const std::string retrieved = std::to_string(article.retrieved_at.time_since_epoch().count());
     const std::string novelty = std::to_string(article.novelty_score);
     const std::string hash(normalized_content_hash), provenance(provenance_json);
     const char* values[] = {article.article_id.c_str(), article.canonical_url.c_str(), hash.c_str(), article.source_id.c_str(), article.headline.c_str(), article.body.c_str(), published.c_str(), retrieved.c_str(), novelty.c_str(), provenance.c_str()};
+    // article_id hashes url+content, but canonical_url and normalized_content_hash
+    // are unique on their own. A syndicated copy (same text, new URL) or a
+    // re-edited story (same URL, new text) gets a fresh id yet hits one of those
+    // constraints, so DO NOTHING stores nothing under that id. Return the id of
+    // the row that is actually stored so child rows reference it.
     Result result(PQexecParams(lease.connection,
-        "INSERT INTO news_articles(article_id,canonical_url,normalized_content_hash,source_id,headline,body,published_at,retrieved_at,novelty_score,provenance) VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7::double precision/1000),to_timestamp($8::double precision/1000),$9,$10::jsonb) ON CONFLICT DO NOTHING",
+        "WITH inserted AS (INSERT INTO news_articles(article_id,canonical_url,normalized_content_hash,source_id,headline,body,published_at,retrieved_at,novelty_score,provenance) VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7::double precision/1000),to_timestamp($8::double precision/1000),$9,$10::jsonb) ON CONFLICT DO NOTHING RETURNING article_id) "
+        "SELECT article_id FROM inserted UNION ALL "
+        "(SELECT article_id FROM news_articles WHERE article_id=$1 OR canonical_url=$2 OR normalized_content_hash=$3 ORDER BY article_id=$1 DESC,canonical_url=$2 DESC,created_at LIMIT 1) LIMIT 1",
         10, nullptr, values, nullptr, nullptr, 0));
-    require_result(result.get());
+    require_result(result.get(), PGRES_TUPLES_OK);
+    // Empty only if a concurrent writer holds the conflicting row uncommitted.
+    if (PQntuples(result.get()) != 1) throw std::runtime_error("Stored news article not found for " + article.article_id);
+    return PQgetvalue(result.get(), 0, 0);
 }
 
 void PostgresPool::persist_news_entities(std::string_view article_id, const std::vector<std::string>& entities) {

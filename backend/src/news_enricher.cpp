@@ -7,6 +7,7 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
@@ -166,12 +167,21 @@ int main() {
                 if (outputs.size() != 1) throw std::runtime_error("FinBERT returned an unexpected batch size");
                 const auto& output = outputs.front();
                 arrakis::database::NewsArticle database_article{article.article_id, article.canonical_url, article.source_id, article.headline, article.body, std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{article.published_at_unix_ms}}, std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::milliseconds{article.retrieved_at_unix_ms}}, 1.0, 0.0, 0.0, 0.0, 0.0, article.entity_ids};
-                database.persist_news_article(database_article, article.normalized_content_hash, "{\"provider\":\"approved-source\"}");
-                database.persist_news_entities(article.article_id, article.entity_ids);
-                database.persist_news_features(article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, embedding_json(output.pooled_embedding), "xlk-news-features-v1", 0.0);
-                aggregates[target_symbol].push_back({article, {article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms}, 1.0, has_company_entity(article.entity_ids), false, true});
-                persist_daily(window, target_symbol);
-                const auto enriched = arrakis::news::serialize_enriched_feature({article.article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms});
+                const auto stored_article_id = database.persist_news_article(database_article, article.normalized_content_hash, "{\"provider\":\"approved-source\"}");
+                database.persist_news_entities(stored_article_id, article.entity_ids);
+                database.persist_news_features(stored_article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, embedding_json(output.pooled_embedding), "xlk-news-features-v1", 0.0);
+                const arrakis::news::EnrichedFeature feature{stored_article_id, finbert.model_version(), finbert.tokenizer_version(), output.positive_probability, output.neutral_probability, output.negative_probability, output.sentiment_score, output.pooled_embedding, 1.0, window.cutoff_unix_ms};
+                // Train/serve parity: build_xlk_combined_dataset keeps one article per
+                // sector and content hash, so a syndicated copy must not count twice.
+                auto& aggregate = aggregates[target_symbol];
+                const bool seen_content = std::any_of(aggregate.begin(), aggregate.end(), [&](const auto& item) {
+                    return item.article.normalized_content_hash == article.normalized_content_hash;
+                });
+                if (!seen_content) {
+                    aggregate.push_back({article, feature, 1.0, has_company_entity(article.entity_ids), false, true});
+                    persist_daily(window, target_symbol);
+                }
+                const auto enriched = arrakis::news::serialize_enriched_feature(feature);
                 producer.publish(env("NEWS_ENRICHED_TOPIC", "news.enriched.features"), target_symbol, enriched); producer.poll_events(std::chrono::milliseconds{0}); consumer.commit(*record);
             } catch (const std::exception& error) {
                 // A scheduled batch must not commit a partial daily snapshot as
